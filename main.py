@@ -1551,6 +1551,14 @@ class MainWindow(QMainWindow):
         if not device or not device.is_online:
             QMessageBox.warning(self, "Thiết bị offline", f"{serial} chưa sẵn sàng qua ADB.")
             return
+        if self.input_sync.enabled and self.master_serial == serial:
+            QMessageBox.warning(
+                self, "Đang đồng bộ thao tác",
+                "Tắt đồng bộ máy chính → máy con trước khi nhúng màn hình máy chính."
+            )
+            return
+        if len(serials) > 1:
+            self.append_log(f"Chỉ nhúng máy đầu tiên ({serial}); các máy khác không bị ảnh hưởng.")
         if self.phone_panel.viewport.serial == serial and self.phone_panel.viewport.hwnd:
             self.append_log(f"{serial}: màn hình đã nhúng trong ứng dụng.")
             return
@@ -1607,6 +1615,9 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def open_all_online(self) -> None:
+        # Người dùng yêu cầu tất cả ở chế độ cửa sổ ngoài.
+        if self.phone_panel.viewport.serial:
+            self.detach_preview_phone()
         # Nếu đang sửa profile của một máy, lưu ngay trước khi mở toàn bộ.
         self.save_current_profile_silent()
         serials = [d.serial for d in self.devices.values() if d.is_online]

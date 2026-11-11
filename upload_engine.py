@@ -145,7 +145,7 @@ class ADB:
         # Grant the receiving app read access to the MediaStore URI.
         out = self.run(
             ["shell", "am", "start", "-a", "android.intent.action.SEND",
-             "-t", "video/mp4", "-f", "0x1", "--eu",
+             "-t", "video/*", "-f", "0x1", "--eu",
              "android.intent.extra.STREAM", media_uri, "-p", package],
             timeout=25, check=False
         )
@@ -235,6 +235,7 @@ def attempt_publish(
     package = PACKAGES[platform]
     caption_done = not bool(caption.strip())
     next_count = 0
+    editor_seen = False
     for _ in range(9):
         if adb.cancelled.is_set():
             raise UploadError("Đã hủy theo yêu cầu.")
@@ -245,6 +246,8 @@ def attempt_publish(
             log(f"{platform}: màn hình khác ứng dụng đích (có thể có quyền/cảnh báo).")
             return "manual_required"
         editor = find_edit(nodes, package)
+        if editor:
+            editor_seen = True
         if editor and not caption_done:
             if not caption.isascii() or "\n" in caption:
                 log(f"{platform}: caption có dấu/emoji; cần nhập thủ công để tránh sai nội dung.")
@@ -259,7 +262,7 @@ def attempt_publish(
             continue
         if caption_done:
             publish = find_button(nodes, PUBLISH_BUTTONS[platform], package)
-            if publish:
+            if publish and (editor_seen or next_count > 0):
                 adb.tap(publish)
                 log(f"{platform}: đã nhấn Đăng, chưa xác minh video xuất bản.")
                 return "submitted_unverified"

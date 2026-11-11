@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -61,6 +62,7 @@ from PySide6.QtWidgets import (
 )
 
 from auto_upload_tab import AutoUploadTab
+from embedded_scrcpy import PhonePreviewPanel
 
 APP_NAME = "Trình quản lý Android Scrcpy"
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -710,6 +712,7 @@ class InputSyncController:
 class ScrcpyProcessManager:
     def __init__(self, log_callback):
         self.processes: Dict[str, subprocess.Popen] = {}
+        self.window_titles: Dict[str, str] = {}
         self.log = log_callback
 
     def is_running(self, serial: str) -> bool:
@@ -720,6 +723,7 @@ class ScrcpyProcessManager:
         dead = [s for s, p in self.processes.items() if p.poll() is not None]
         for serial in dead:
             self.processes.pop(serial, None)
+            self.window_titles.pop(serial, None)
 
     def start(
         self,
@@ -783,6 +787,7 @@ class ScrcpyProcessManager:
                 startupinfo=win_startupinfo(),
             )
             self.processes[serial] = proc
+            self.window_titles[serial] = window_title
             self.log(f"Mở scrcpy: {window_title} | {serial}")
             return True
         except Exception as e:
@@ -817,6 +822,7 @@ class ScrcpyProcessManager:
             except Exception as e:
                 self.log(f"Lỗi tắt scrcpy {serial}: {e}")
         self.processes.pop(serial, None)
+        self.window_titles.pop(serial, None)
         if keep_screen_off:
             time.sleep(0.2)
             self._send_sleep_key(serial)
@@ -859,7 +865,7 @@ class MainWindow(QMainWindow):
         self.master_title = ""
         self.setWindowTitle(APP_NAME)
         self._icon_path = apply_window_icon(self)
-        self.resize(1260, 760)
+        self.resize(1480, 860)
         self._build_ui()
         self._apply_settings_to_ui()
 
@@ -883,9 +889,9 @@ class MainWindow(QMainWindow):
 
         toolbar = QHBoxLayout()
         self.btn_scan = QPushButton("Quét thiết bị")
-        self.btn_open_selected = QPushButton("Mở scrcpy đã chọn")
+        self.btn_open_selected = QPushButton("Nhúng scrcpy đã chọn")
         self.btn_close_selected = QPushButton("Tắt scrcpy đã chọn")
-        self.btn_open_all = QPushButton("Mở tất cả online")
+        self.btn_open_all = QPushButton("Mở tất cả (cửa sổ riêng)")
         self.btn_close_all = QPushButton("Tắt tất cả")
         self.btn_save_profile = QPushButton("Lưu profile")
         self.auto_scan_toggle = QCheckBox("Tự quét")
@@ -951,9 +957,25 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(top_widget)
         splitter.addWidget(bottom_tabs)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([230, 650])
         layout.addWidget(splitter)
+
+        # Màn hình điện thoại luôn nằm trong ứng dụng, kể cả khi mở tab Auto Upload.
+        self.phone_panel = PhonePreviewPanel(self)
+        self.phone_dock = QDockWidget("Màn hình điện thoại - scrcpy trực tiếp", self)
+        self.phone_dock.setObjectName("embeddedPhoneDock")
+        self.phone_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.phone_dock.setMinimumWidth(310)
+        self.phone_dock.setWidget(self.phone_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.phone_dock)
+        self.phone_panel.request_embed.connect(self.embed_selected_phone)
+        self.phone_panel.request_external.connect(self.detach_preview_phone)
+        self.phone_panel.request_stop.connect(self.stop_preview_phone)
+        self.phone_panel.request_home.connect(lambda: self.phone_keyevent("KEYCODE_HOME"))
+        self.phone_panel.request_back.connect(lambda: self.phone_keyevent("KEYCODE_BACK"))
+        self.phone_panel.viewport.message.connect(self.append_log)
 
         menubar = self.menuBar()
         file_menu = menubar.addMenu("Tệp")
@@ -1453,6 +1475,8 @@ class MainWindow(QMainWindow):
         title = f"MASTER - {profile.name or device.display_model} - {serial}"
 
         if self.scrcpy.is_running(serial):
+            if self.phone_panel.viewport.serial == serial:
+                self.phone_panel.viewport.release(restore=True)
             self.scrcpy.stop(serial, keep_screen_off=False)
             time.sleep(0.2)
         if not self.scrcpy.start(serial, profile, title, x=x, y=y):
@@ -1516,12 +1540,84 @@ class MainWindow(QMainWindow):
             self.scrcpy.start(serial, p, title, x=x, y=y)
         self.refresh_running_state()
 
+    def embed_selected_phone(self) -> None:
+        # Một màn hình trong dock tại một thời điểm. Các máy khác vẫn quản lý bình thường.
+        serials = self.selected_serials()
+        if not serials:
+            QMessageBox.information(self, "Chưa chọn máy", "Chọn một điện thoại đang online trong bảng.")
+            return
+        serial = serials[0]
+        device = self.devices.get(serial)
+        if not device or not device.is_online:
+            QMessageBox.warning(self, "Thiết bị offline", f"{serial} chưa sẵn sàng qua ADB.")
+            return
+        if self.input_sync.enabled and self.master_serial == serial:
+            QMessageBox.warning(
+                self, "Đang đồng bộ thao tác",
+                "Tắt đồng bộ máy chính → máy con trước khi nhúng màn hình máy chính."
+            )
+            return
+        if len(serials) > 1:
+            self.append_log(f"Chỉ nhúng máy đầu tiên ({serial}); các máy khác không bị ảnh hưởng.")
+        if self.phone_panel.viewport.serial == serial and self.phone_panel.viewport.hwnd:
+            self.append_log(f"{serial}: màn hình đã nhúng trong ứng dụng.")
+            return
+        # Không ghi đè các profile đã lưu bằng form chưa được chọn hoặc chưa nhập.
+        profile = self.config.profile_for(device)
+        if self.scrcpy.is_running(serial):
+            process = self.scrcpy.processes[serial]
+            title = self.scrcpy.window_titles.get(serial, "")
+            if not title:
+                QMessageBox.warning(self, "Thiếu tiêu đề cửa sổ", "Không xác định được phiên scrcpy đang chạy.")
+                return
+        else:
+            title = f"EMBED - {profile.name or device.display_model} - {serial}"
+            if not self.scrcpy.start(serial, profile, title):
+                return
+            process = self.scrcpy.processes[serial]
+        self.phone_panel.viewport.begin(serial, process, title)
+        self.refresh_running_state()
+
     def open_selected(self) -> None:
-        # Tự lưu profile đang hiện trên form trước khi mở, tránh tick option nhưng chưa có hiệu lực.
-        self.save_current_profile_silent()
-        self.open_for_serials(self.selected_serials())
+        self.embed_selected_phone()
+
+    def detach_preview_phone(self) -> None:
+        serial = self.phone_panel.viewport.serial
+        if not serial:
+            return
+        self.phone_panel.viewport.release(restore=True)
+        self.append_log(f"{serial}: đã chuyển scrcpy thành cửa sổ riêng.")
+
+    def stop_preview_phone(self) -> None:
+        serial = self.phone_panel.viewport.serial
+        if not serial:
+            return
+        self.phone_panel.viewport.release(restore=True)
+        if self.master_serial == serial:
+            self.input_sync.stop()
+            self._set_sync_toggle_checked(False)
+        self.scrcpy.stop(serial, keep_screen_off=self.profile_keep_screen_off(serial))
+        self.refresh_running_state()
+
+    def phone_keyevent(self, key: str) -> None:
+        serial = self.phone_panel.viewport.serial or self.current_serial()
+        if not serial:
+            QMessageBox.information(self, "Chưa chọn máy", "Chọn một điện thoại trước.")
+            return
+        args = self.adb_args(serial, ["shell", "input", "keyevent", key])
+        if not args:
+            return
+        worker = AdbWorker(args, timeout=10)
+        worker.done.connect(lambda msg, s=serial: self.append_log(f"{s}: {key} - {msg}"))
+        worker.fail.connect(lambda err, s=serial: self.append_log(f"{s}: {key} lỗi - {err}"))
+        self.workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._worker_finished(w))
+        worker.start()
 
     def open_all_online(self) -> None:
+        # Người dùng yêu cầu tất cả ở chế độ cửa sổ ngoài.
+        if self.phone_panel.viewport.serial:
+            self.detach_preview_phone()
         # Nếu đang sửa profile của một máy, lưu ngay trước khi mở toàn bộ.
         self.save_current_profile_silent()
         serials = [d.serial for d in self.devices.values() if d.is_online]
@@ -1534,6 +1630,8 @@ class MainWindow(QMainWindow):
     def close_selected(self) -> None:
         self.save_current_profile_silent()
         serials = self.selected_serials()
+        if self.phone_panel.viewport.serial in serials:
+            self.phone_panel.viewport.release(restore=True)
         if self.master_serial in serials:
             self.input_sync.stop()
             self._set_sync_toggle_checked(False)
@@ -1543,6 +1641,7 @@ class MainWindow(QMainWindow):
 
     def close_all(self) -> None:
         self.save_current_profile_silent()
+        self.phone_panel.viewport.release(restore=True)
         self.input_sync.stop()
         self._set_sync_toggle_checked(False)
         keep = {s for s in self.scrcpy.processes.keys() if self.profile_keep_screen_off(s)}
@@ -1710,6 +1809,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.config.save()
+        self.phone_panel.viewport.shutdown()
         self.input_sync.stop()
         # Tắt scrcpy do app mở để tránh treo process. Nếu bật giữ màn hình tắt, app sẽ gửi lệnh sleep trước/sau khi tắt.
         keep = {s for s in self.scrcpy.processes.keys() if self.profile_keep_screen_off(s)}
@@ -1728,7 +1828,8 @@ def main() -> int:
         w.append_log(f"Icon app: {w._icon_path}")
     else:
         w.append_log("Chưa tìm thấy file icon. Đặt file .ico vào assets/app_icon.ico hoặc assets/app.ico")
-    w.show()
+    w.showMaximized()
+    QTimer.singleShot(0, lambda: w.resizeDocks([w.phone_dock], [425], Qt.Horizontal))
     return app.exec()
 
 

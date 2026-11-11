@@ -1,0 +1,18 @@
+name: Validate Auto Upload
+on:
+  push:
+    branches: [main, feature/auto-upload-mvp]
+  pull_request:
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile all Python modules
+        run: python -m compileall -q main.py upload_engine.py auto_upload_tab.py tests
+      - name: Unit tests (no Android device needed)
+        run: python -m unittest discover -s tests -v

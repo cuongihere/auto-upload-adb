@@ -51,10 +51,18 @@ class WorkflowTest(unittest.TestCase):
         adb = Mock()
         adb.cancelled = threading.Event()
         post = node("Post")
-        adb.ui_nodes.return_value = [node("Details"), post]
+        adb.ui_nodes.return_value = [node(cls="android.widget.EditText"), post]
         status = attempt_publish(adb, "TikTok", "", lambda _: None)
         self.assertEqual(status, "submitted_unverified")
         adb.tap.assert_called_once_with(post)
+
+    def test_no_editor_or_next_requires_manual(self):
+        adb = Mock()
+        adb.cancelled = threading.Event()
+        adb.ui_nodes.return_value = [node("Details"), node("Post")]
+        status = attempt_publish(adb, "TikTok", "", lambda _: None)
+        self.assertEqual(status, "manual_required")
+        adb.tap.assert_not_called()
 
     def test_ascii_input_escapes_spaces(self):
         adb = ADB("adb", "serial", threading.Event())

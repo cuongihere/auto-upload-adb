@@ -37,6 +37,7 @@ class UploadRequest:
     platforms: tuple[str, ...]
     captions: dict[str, str]
     auto_publish: bool = False
+    choose_latest: bool = True
 
 
 def write_history(data: dict) -> None:
@@ -282,10 +283,15 @@ def run_request(
     log: Callable[[str], None], cancelled: threading.Event,
     on_manual_wait: Optional[Callable[[dict], None]] = None
 ) -> list[dict]:
+    """Transfer once, then navigate each social app by tapping its real UI."""
+    from tap_flow import TouchFlow, FlowStopped
+
     adb = ADB(adb_executable, request.serial, cancelled)
     adb.verify_online()
+    log(f"{request.serial}: sao chép video từ PC vào điện thoại...")
     remote, media_uri = adb.transfer(request.video, log)
     outcomes: list[dict] = []
+
     for platform in request.platforms:
         if cancelled.is_set():
             raise UploadError("Đã hủy theo yêu cầu.")
@@ -298,26 +304,33 @@ def run_request(
         try:
             if not adb.app_installed(package):
                 raise UploadError(f"Chưa cài {platform} ({package}) trên điện thoại.")
-            if media_uri and adb.share_video(package, media_uri):
-                log(f"{request.serial} | {platform}: đã gửi video tới ứng dụng.")
-                result["status"] = "prepared"
-                if request.auto_publish:
-                    result["status"] = attempt_publish(
-                        adb, platform, request.captions.get(platform, ""), log
-                    )
-                else:
-                    result["detail"] = "Video đã gửi qua Android Share; hoàn tất đăng trên điện thoại."
-            else:
-                adb.launch(package)
+            flow = TouchFlow(
+                adb, platform, remote, media_uri, request.captions.get(platform, ""),
+                request.auto_publish, request.choose_latest, log
+            )
+            result["status"] = flow.execute()
+            if result["status"] == "prepared":
                 result["detail"] = (
-                    "Không mở được luồng Share trực tiếp; đã mở ứng dụng. "
-                    "Hãy chọn video trong DCIM/Camera và đăng thủ công."
+                    "Đã vào màn hình đăng; hãy xác nhận video và nhấn Đăng trên điện thoại."
                 )
-                log(f"{request.serial} | {platform}: {result['detail']}")
-        except Exception as exc:
+            elif result["status"] == "submitted_unverified":
+                result["detail"] = (
+                    "Đã chạm nút Đăng; chưa xác minh TikTok/Facebook xuất bản thành công."
+                )
+        except FlowStopped as exc:
+            result["status"] = "manual_required"
+            result["detail"] = str(exc)
+            log(f"{request.serial} | {platform}: DỪNG AN TOÀN: {exc}")
+        except UploadError as exc:
+            if cancelled.is_set():
+                raise
             result["status"] = "error"
             result["detail"] = str(exc)
             log(f"{request.serial} | {platform}: LỖI - {exc}")
+        except Exception as exc:
+            result["status"] = "error"
+            result["detail"] = str(exc)
+            log(f"{request.serial} | {platform}: LỖI KHÔNG DỰ KIẾN - {exc}")
         write_history(result)
         outcomes.append(result)
         if on_manual_wait and result["status"] in {"prepared", "manual_required"}:

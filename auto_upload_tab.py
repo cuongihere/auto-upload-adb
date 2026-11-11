@@ -312,7 +312,10 @@ class AutoUploadTab(QWidget):
                 "KHÔNG có nghĩa video đã xuất bản thành công."
             )
 
-    def shutdown(self):
+    def shutdown(self) -> bool:
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
-            self.worker.wait(5000)
+            if not self.worker.wait(4000):
+                self.append("ADB đang hoàn tất tác vụ. Hãy đóng lại khi tiến trình dừng.")
+                return False
+        return True

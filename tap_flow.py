@@ -40,6 +40,14 @@ CAPTION_HINTS = (
     "Describe your video", "Add a description", "Viết chú thích",
     "Caption", "Mô tả", "Viết gì đó", "Describe", "Add caption"
 )
+PICKER_PACKAGES = {
+    "com.google.android.providers.media.module",
+    "com.android.providers.media.module",
+    "com.android.documentsui",
+    "com.google.android.documentsui",
+    "com.sec.android.gallery3d",
+    "com.google.android.apps.photos",
+}
 
 
 class FlowStopped(UploadError):
@@ -248,27 +256,41 @@ class TouchFlow:
         self.step("Chọn đúng video mới copy trong thư viện")
         nodes = self.wait_nodes(8)
         name = Path(self.remote).name
+        # Prefer the Videos-only tab. Never guess the first item of a
+        # mixed Photos+Videos album, even if this is the latest *video*.
+        video_tab = next((
+            n for n in nodes if n.get("enabled") and
+            n.get("text", "").casefold() in ("videos", "video", "video clip", "video clips")
+            and n.get("package") in ({self.package} | PICKER_PACKAGES)
+        ), None)
+        if video_tab:
+            self.adb.tap(video_tab)
+            self.sleep(0.9)
+            nodes = self.wait_nodes(5)
         # Safest path: visible file name or accessibility description.
         matches = [n for n in nodes if name.casefold() in
                    (n.get("text", "") + " " + n.get("desc", "")).casefold()
                    and n.get("enabled")]
         if len(matches) == 1:
             self.adb.tap(matches[0])
-        elif self.choose_latest and self.latest_in_mediastore() and self.hint(nodes, GALLERY_MARKERS):
-            # Some pickers hide filenames. Only choose first grid tile when MediaStore
-            # verifies this upload is newest video. If UI lacks a distinct tile, pause.
+        elif (self.choose_latest and video_tab is not None
+              and self.latest_in_mediastore()):
+            # Picker must expose a Videos-only filter, not an arbitrary mixed album.
+            # Android's media scanner has confirmed this video is the newest VIDEO.
+            w, h = self.size()
             candidates = [
                 n for n in nodes if n.get("enabled") and n.get("clickable")
-                and n.get("package") == self.package
+                and n.get("package") in ({self.package} | PICKER_PACKAGES)
+                and int(h * 0.14) < n.get("y", 0) < int(h * 0.86)
                 and ("Image" in n.get("class", "") or any(
                     key in n.get("resource", "").lower()
-                    for key in ("thumbnail", "media_item", "gallery_item", "photo_item")
+                    for key in ("thumbnail", "media_item", "gallery_item", "photo_item", "video_item")
                 ))
             ]
             candidates.sort(key=lambda n: (n["y"], n["x"]))
             if not candidates:
                 self.stop("Video mới nhất có trong MediaStore, nhưng không tìm thấy thumbnail có thể bấm.")
-            self.log("Chọn thumbnail video đầu tiên (đã xác nhận video mới copy là mới nhất).")
+            self.log("Chọn thumbnail đầu tiên của tab Videos (đã xác nhận file mới là video mới nhất).")
             self.adb.tap(candidates[0])
         else:
             self.stop(

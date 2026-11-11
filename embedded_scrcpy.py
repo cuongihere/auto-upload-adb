@@ -119,7 +119,9 @@ def attach_window(hwnd: int, parent: int, width: int, height: int) -> int:
         hwnd, None, 0, 0, max(1, width), max(1, height),
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        error = ctypes.get_last_error()
+        detach_window(hwnd, old_style)
+        raise ctypes.WinError(error)
     return old_style
 
 

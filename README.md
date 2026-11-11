@@ -34,7 +34,7 @@ Các launcher `run.bat`, `run.vbs`, `setup_and_run.bat` và phần hướng dẫ
 1. Kết nối điện thoại, mở khóa, đăng nhập TikTok và chọn máy online.
 2. Thêm video, nhập caption và nhấn **Bắt đầu thao tác trên điện thoại**.
 3. App tính SHA-256 và kiểm tra lịch sử trước khi copy. Cùng nội dung video trên cùng nền tảng bị chặn trên mọi điện thoại, kể cả đổi tên hoặc chuyển thư mục. Video được mã hóa lại có nội dung byte khác nên chưa nhận diện là bản trùng.
-4. App copy tới `/sdcard/DCIM/Camera/`, kiểm tra kích thước, cập nhật MediaStore, mở TikTok, bấm **Quay → thư viện → Video → chọn video → Tiếp → caption**. Nếu không thấy icon, app mở đúng package qua Android launcher. Việc chọn thumbnail đầu tiên chỉ diễn ra khi video vừa copy đứng đầu cả thứ tự ID và thời gian sửa trong MediaStore, trong tab Video.
+4. App copy tới `/sdcard/Movies/AutoUpload/AU_<mã-lượt>/`, mỗi lượt một album chỉ có một video. App kiểm tra kích thước, cập nhật ngày sửa, quét MediaStore, mở TikTok và đi qua **Quay → thư viện → album AU_ tương ứng → Video → chọn video → Tiếp → caption**. Chỉ tự chọn khi album đang mở có đúng tên, MediaStore đối chiếu đúng ID/tên/đường dẫn và lưới hiển thị đúng một video. Không suy đoán thumbnail đầu tiên trong Gần đây. Nếu không thấy icon, app mở đúng package qua Android launcher.
 5. Mặc định dừng ở màn hình Đăng. Bạn kiểm tra và đăng trên điện thoại, sau đó nhấn **Đã đăng thành công**. App lưu kết quả và mới chuyển sang video tiếp theo.
 6. Tùy chọn **Tự bấm Đăng cuối cùng** ghi trạng thái bền vững trước khi chạm Đăng, sau đó chờ thông báo thành công rõ ràng. Nếu không đọc được thông báo, app dừng để bạn kiểm tra; không coi việc trở về trang chủ là bằng chứng đăng thành công.
 
@@ -64,6 +64,17 @@ python -m unittest discover -s tests -v
 
 ### Lưu ý tương thích
 
-Nhúng native HWND qua Win32 `SetParent` cần Windows 10/11, Qt/PySide6 và scrcpy đang chạy trong process do app quản lý. Một số phiên bản scrcpy/driver GPU/DPI có thể khiến việc nhúng không thành công: ứng dụng ghi lỗi, scrcpy vẫn mở ngoài để có thể điều khiển thủ công. Kiểm thử tự động bao gồm Windows UI smoke test, nhưng **chưa xác thực trực tiếp trên điện thoại Samsung hoặc Windows của người sử dụng**. Nếu khung đen, thử **Tách ra** rồi **Nhúng scrcpy** lại và gửi ảnh chụp cùng log.
+Nhúng native HWND qua Win32 `SetParent` cần Windows 10/11, Qt/PySide6 và scrcpy đang chạy trong process do app quản lý. Một số phiên bản scrcpy/driver GPU/DPI có thể khiến việc nhúng không thành công: ứng dụng ghi lỗi, scrcpy vẫn mở ngoài để có thể điều khiển thủ công. Kiểm thử tự động bao gồm Windows UI smoke test, đã kiểm tra nhúng màn hình trên Samsung SM-N960F và Windows hiện tại. Các máy/phiên bản khác vẫn có thể cần điều chỉnh. Nếu khung đen, thử **Tách ra** rồi **Nhúng scrcpy** lại và gửi ảnh chụp cùng log.
 
 Khi đang chạy Auto Upload, hãy giữ khung bên phải để kiểm tra thao tác trên TikTok/Facebook. Nút tự nhấn Đăng vẫn là tính năng thử nghiệm; có màn hình scrcpy không tự động đồng nghĩa với đăng video đã thành công.
+
+## Bàn phím và copy/paste với điện thoại
+
+- Bấm ô nhập trên điện thoại trong khung scrcpy để chọn vị trí con trỏ. Bấm **Bàn phím → điện thoại** nếu phím đang đi vào ô của app PC, rồi gõ bình thường. Backspace, Enter và phím điều hướng đi tới điện thoại.
+- **Ctrl+A/C/X/V** trong khung scrcpy: chọn hết, copy, cắt và dán. Có các nút tương ứng ngay dưới màn hình điện thoại; Copy/Cắt cần chọn chữ trong ô Android trước.
+- Copy văn bản ở PC rồi bấm **Dán từ PC**. Tiếng Việt, emoji và xuống dòng đi qua clipboard Unicode của scrcpy. Không dùng legacy paste/ADB input text cho Unicode.
+- Có thể soạn bằng bộ gõ Windows trong ô **Soạn nội dung gửi điện thoại**, rồi bấm **Chèn nội dung vào điện thoại**. Nội dung được chèn tại con trỏ, không tự xóa nội dung đang có; clipboard PC được đặt thành nội dung vừa soạn.
+- Bàn phím SDK trực tiếp của scrcpy hỗ trợ ASCII và một số ký tự khác; với tiếng Việt đầy đủ, dùng ô soạn hoặc dán clipboard. Xem [keyboard](https://github.com/Genymobile/scrcpy/blob/master/doc/keyboard.md) và [copy/paste](https://github.com/Genymobile/scrcpy/blob/master/doc/control.md#copy-paste) của scrcpy.
+- Các nút chỉ gửi tới cửa sổ scrcpy đang nhúng đúng PID/parent. Khi chưa nhúng, đã tách hoặc mất focus, app vô hiệu hóa/báo lỗi thay vì gửi phím vào cửa sổ khác. Clipboard chỉ dán văn bản, không chép file/ảnh.
+
+Sau khi cập nhật mã nguồn, dừng hàng đợi rồi mở lại app để nạp bản mới. Lượt upload cũ trong DCIM/Camera không có album riêng: chỉ tiếp tục thủ công nếu đã kiểm tra video; hoặc xác nhận **chưa đăng** trong lịch sử và chạy lại để app tạo album riêng. Không gỡ chặn lịch sử của bài đã đăng.

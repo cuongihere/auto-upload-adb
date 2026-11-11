@@ -760,6 +760,8 @@ class ScrcpyProcessManager:
             str(p.bitrate),
             "--max-fps",
             str(p.max_fps),
+            '--keyboard=sdk',
+            '--prefer-text',
         ]
 
         if p.no_audio:

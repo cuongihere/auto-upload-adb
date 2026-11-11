@@ -23,7 +23,7 @@ PACKAGES = {
     "Facebook": "com.facebook.katana",
 }
 EXTENSIONS = {".mp4", ".mov", ".m4v", ".3gp"}
-ANDROID_DIR = "/sdcard/DCIM/Camera"
+ANDROID_DIR = "/sdcard/Movies/AutoUpload"
 HISTORY = Path(__file__).resolve().parent / "logs" / "auto_upload_history.jsonl"
 
 
@@ -118,11 +118,16 @@ class ADB:
         if video.stat().st_size == 0:
             raise UploadError("Tệp video rỗng.")
         ext = video.suffix.lower()
-        remote_name = f"au_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}{ext}"
-        remote = f"{ANDROID_DIR}/{remote_name}"
-        self.run(["shell", "mkdir", "-p", ANDROID_DIR])
+        token = f'{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}'
+        remote_name = f'au_{token}{ext}'
+        # A unique album contains exactly this video. Gallery order is not an
+        # identity check: adb push preserves source mtime on some versions.
+        remote_dir = f'{ANDROID_DIR}/AU_{token}'
+        remote = f"{remote_dir}/{remote_name}"
+        self.run(["shell", "mkdir", "-p", remote_dir])
         log(f"{self.serial}: chuyển {video.name} sang {remote}")
         self.run(["push", str(video), remote], timeout=max(120, video.stat().st_size // (500 * 1024)))
+        self.run(['shell', 'touch', remote], timeout=15)
         actual_size = self.run(["shell", "stat", "-c", "%s", remote], timeout=15)
         match = re.search(r"\b(\d+)\b", actual_size)
         if not match or int(match.group(1)) != video.stat().st_size:

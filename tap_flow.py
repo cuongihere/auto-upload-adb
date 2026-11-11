@@ -269,6 +269,9 @@ class TouchFlow:
         self.step("Chọn đúng video mới copy trong thư viện")
         nodes = self.wait_nodes(8)
         name = Path(self.remote).name
+        isolated = self.isolated_album_name()
+        if isolated and self.choose_latest:
+            nodes = self.open_isolated_album(isolated, nodes)
         # Prefer the Videos-only tab. Never guess the first item of a
         # mixed Photos+Videos album, even if this is the latest *video*.
         video_tab = next((
@@ -283,27 +286,21 @@ class TouchFlow:
         # Safest path: visible file name or accessibility description.
         matches = [n for n in nodes if name.casefold() in
                    (n.get("text", "") + " " + n.get("desc", "")).casefold()
-                   and n.get("enabled")]
+                   and n.get("enabled")
+                   and n.get('package') in ({self.package} | PICKER_PACKAGES)]
         if len(matches) == 1:
             self.adb.tap(matches[0])
-        elif (self.choose_latest and video_tab is not None
-              and self.latest_in_mediastore()):
-            # Picker must expose a Videos-only filter, not an arbitrary mixed album.
-            # Android's media scanner has confirmed this video is the newest VIDEO.
-            w, h = self.size()
-            candidates = [
-                n for n in nodes if n.get("enabled") and n.get("clickable")
-                and n.get("package") in ({self.package} | PICKER_PACKAGES)
-                and int(h * 0.14) < n.get("y", 0) < int(h * 0.86)
-                and (n.get('grid_item') or "Image" in n.get("class", "") or any(
-                    key in n.get("resource", "").lower()
-                    for key in ("thumbnail", "media_item", "gallery_item", "photo_item", "video_item")
-                ))
-            ]
-            candidates.sort(key=lambda n: (n["y"], n["x"]))
-            if not candidates:
-                self.stop("Video mới nhất có trong MediaStore, nhưng không tìm thấy thumbnail có thể bấm.")
-            self.log("Chọn thumbnail đầu tiên của tab Videos (đã xác nhận file mới là video mới nhất).")
+        elif isolated and self.choose_latest and video_tab is not None and self.album_is_exact(isolated):
+            if not any(n.get('package') == self.package and n.get('text') == isolated
+                       and n.get('resource', '').endswith(':id/tv_title') for n in nodes):
+                self.stop('Bộ lọc Video đã đổi album. Không chọn video từ danh sách khác.')
+            # Only direct media-grid children in the explicitly selected album.
+            # Do not consider unrelated ImageView buttons behind the picker.
+            candidates = [n for n in nodes if n.get('grid_item') and n.get('enabled')
+                          and n.get('clickable') and n.get('package') in ({self.package} | PICKER_PACKAGES)]
+            if len(candidates) != 1:
+                self.stop('Album riêng chưa hiển thị đúng một video. Không chọn thumbnail theo thứ tự.')
+            self.log(f'Chọn video duy nhất trong album {isolated}, đã đối chiếu ID/tên/đường dẫn MediaStore.')
             self.adb.tap(candidates[0])
         else:
             self.stop(
@@ -312,6 +309,66 @@ class TouchFlow:
             )
         self.selected_media = True
         self.sleep(1.0)
+
+    def isolated_album_name(self) -> Optional[str]:
+        parent = Path(self.remote).parent
+        if parent.name.startswith('AU_') and parent.parent.name == 'AutoUpload':
+            return parent.name
+        return None
+
+    def album_is_exact(self, album: str) -> bool:
+        if not self.media_uri:
+            return False
+        expected = self.media_uri.rsplit('/', 1)[-1]
+        if not expected.isdigit() or album != self.isolated_album_name():
+            return False
+        # Android exposes /sdcard as /storage/emulated/0 in MediaStore.
+        directory = str(Path(self.remote).parent).replace('\\', '/')
+        if directory.startswith('/sdcard/'):
+            directory = directory.replace('/sdcard/', '/storage/emulated/0/', 1)
+        rows = self.adb.run(
+            ['shell', 'content', 'query', '--uri', 'content://media/external/video/media',
+             '--projection', '_id:_display_name:_data', '--where', f"_data LIKE '{directory}/%'"],
+            timeout=20, check=False)
+        entries = [row for row in rows.splitlines() if row.strip().startswith('Row:')]
+        if len(entries) != 1:
+            return False
+        row = entries[0]
+        ident = re.search(r'(?:^|[\s,])_id=(\d+)(?:,|$)', row)
+        fields = dict(re.findall(r'(?:^|, )(_display_name|_data)=([^,\r\n]+)', row))
+        return bool(ident and ident.group(1) == expected
+                    and fields.get('_display_name') == Path(self.remote).name
+                    and fields.get('_data') == f'{directory}/{Path(self.remote).name}')
+
+    def open_isolated_album(self, album: str, nodes: list[dict]) -> list[dict]:
+        if not self.album_is_exact(album):
+            self.stop('MediaStore chưa xác nhận album riêng chứa duy nhất đúng video. Chờ quét media rồi thử lại.')
+        title = next((n for n in nodes if n.get('package') == self.package
+                      and n.get('resource', '').endswith(':id/tv_title')
+                      and n.get('enabled')), None)
+        if title and title.get('text') == album:
+            return nodes
+        opener = title or self.exact(nodes, ('Gần đây', 'Recents', 'Recent', 'Albums', 'Album'))
+        if not opener:
+            self.stop(f'Không tìm thấy bộ chọn album. Chọn album {album} trên điện thoại rồi nhấn Tiếp tục.')
+        self.adb.tap(opener)
+        self.sleep(0.7)
+        for attempt in range(8):
+            current = self.wait_nodes()
+            target = self.exact(current, (album,))
+            if target:
+                self.adb.tap(target)
+                self.sleep(0.9)
+                after = self.wait_nodes()
+                # Require a picker title, not the album row just tapped.
+                if any(n.get('package') == self.package and n.get('text') == album
+                       and n.get('resource', '').endswith(':id/tv_title') for n in after):
+                    return after
+                self.stop('Chưa xác nhận đã mở album riêng. Không chọn video trong Gần đây.')
+            if attempt < 7:
+                self.swipe_up()
+                self.sleep(0.4)
+        self.stop(f'Chưa thấy album {album}. Mở lại thư viện để TikTok cập nhật rồi nhấn Tiếp tục.')
 
     def navigate_edit(self):
         self.step("Tiếp → mở màn hình biên tập và caption")

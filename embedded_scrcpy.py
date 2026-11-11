@@ -13,7 +13,8 @@ from ctypes import wintypes
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget, QPushButton
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget, QPushButton, QPlainTextEdit
+from phone_input import focus_phone, send_shortcut
 
 WINDOWS = platform.system().lower() == "windows"
 
@@ -150,6 +151,7 @@ class EmbeddedScrcpyViewport(QWidget):
     message = Signal(str)
     attached = Signal(str)
     detached = Signal()
+    input_error = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -274,6 +276,39 @@ class EmbeddedScrcpyViewport(QWidget):
         # Stop QTimer callbacks, restore child before Qt destroys its native HWND.
         self.release(restore=True)
 
+    def keyboard_focus(self) -> bool:
+        try:
+            if not self.process or self.process.poll() is not None:
+                raise OSError('Nhúng scrcpy trước khi nhập nội dung.')
+            focus_phone(self.hwnd, int(self.winId()), self.process.pid)
+            return True
+        except (OSError, ValueError) as exc:
+            self.message.emit(str(exc))
+            self.input_error.emit(str(exc))
+            return False
+
+    def shortcut(self, key: str) -> bool:
+        try:
+            if not self.process or self.process.poll() is not None:
+                raise OSError('Nhúng scrcpy trước khi nhập nội dung.')
+            send_shortcut(self.hwnd, int(self.winId()), self.process.pid, key)
+            return True
+        except (OSError, ValueError) as exc:
+            self.message.emit(str(exc))
+            self.input_error.emit(str(exc))
+            return False
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if self.hwnd:
+            # Defer until Qt finishes dispatching focus to the wrapper widget.
+            QTimer.singleShot(0, self.keyboard_focus)
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if self.hwnd:
+            self.keyboard_focus()
+
 
 class PhonePreviewPanel(QWidget):
     """Permanent dock panel with phone video and basic device controls."""
@@ -300,6 +335,38 @@ class PhonePreviewPanel(QWidget):
         self.viewport.setMinimumSize(220, 270)
         root.addWidget(self.viewport, 1)
 
+        self.input_hint = QLabel('Bấm ô chữ trên điện thoại rồi gõ. Ctrl+A/C/X/V: chọn hết / copy / cắt / dán.\n'
+                                'Tiếng Việt, emoji: dán từ PC hoặc soạn ở ô bên dưới.')
+        self.input_hint.setWordWrap(True)
+        root.addWidget(self.input_hint)
+        keyboard_row = QHBoxLayout()
+        self.btn_keyboard = QPushButton('Bàn phím → điện thoại')
+        self.btn_paste = QPushButton('Dán từ PC')
+        self.btn_paste.setToolTip('Dán văn bản clipboard PC vào ô đang chọn trên điện thoại, giữ tiếng Việt/emoji/xuống dòng.')
+        keyboard_row.addWidget(self.btn_keyboard)
+        keyboard_row.addWidget(self.btn_paste)
+        root.addLayout(keyboard_row)
+
+        edit_row = QHBoxLayout()
+        self.btn_select_all = QPushButton('Chọn tất cả')
+        self.btn_copy = QPushButton('Copy từ điện thoại')
+        self.btn_cut = QPushButton('Cắt')
+        for button in (self.btn_select_all, self.btn_copy, self.btn_cut):
+            edit_row.addWidget(button)
+        root.addLayout(edit_row)
+
+        self.composer = QPlainTextEdit()
+        self.composer.setPlaceholderText('Soạn tiếng Việt, hashtag, emoji… rồi bấm Chèn nội dung.\nNội dung được chèn tại con trỏ trong ô đã chọn trên điện thoại.')
+        self.composer.setMaximumHeight(75)
+        self.composer.setAccessibleName('Soạn nội dung gửi điện thoại')
+        root.addWidget(self.composer)
+        self.btn_insert = QPushButton('Chèn nội dung vào điện thoại')
+        root.addWidget(self.btn_insert)
+        self.input_status = QLabel('')
+        self.input_status.setWordWrap(True)
+        self.viewport.input_error.connect(self.input_status.setText)
+        root.addWidget(self.input_status)
+
         controls = QHBoxLayout()
         self.btn_embed = QPushButton("📱 Nhúng scrcpy")
         self.btn_external = QPushButton("Tách ra")
@@ -321,6 +388,12 @@ class PhonePreviewPanel(QWidget):
         self.btn_stop.clicked.connect(self.request_stop.emit)
         self.btn_home.clicked.connect(self.request_home.emit)
         self.btn_back.clicked.connect(self.request_back.emit)
+        self.btn_keyboard.clicked.connect(self.focus_keyboard)
+        self.btn_paste.clicked.connect(self.paste_clipboard)
+        self.btn_insert.clicked.connect(self.insert_composed)
+        self.btn_select_all.clicked.connect(lambda: self.phone_shortcut('A'))
+        self.btn_copy.clicked.connect(lambda: self.phone_shortcut('C'))
+        self.btn_cut.clicked.connect(lambda: self.phone_shortcut('X'))
         self.viewport.attached.connect(self._on_attached)
         self.viewport.detached.connect(self._on_detached)
         self._on_detached()
@@ -329,11 +402,46 @@ class PhonePreviewPanel(QWidget):
         self.label.setText(f"📱 Đang điều khiển: {serial}")
         self.btn_external.setEnabled(True)
         self.btn_stop.setEnabled(True)
+        self._set_input_enabled(True)
 
     def _on_detached(self):
         self.label.setText("Chọn điện thoại và nhấn «Nhúng scrcpy».")
         self.btn_external.setEnabled(False)
         self.btn_stop.setEnabled(False)
+        self._set_input_enabled(False)
+        self.input_status.clear()
+
+    def _set_input_enabled(self, enabled: bool):
+        for button in (self.btn_keyboard, self.btn_paste, self.btn_insert,
+                       self.btn_select_all, self.btn_copy, self.btn_cut):
+            button.setEnabled(enabled)
+
+    def focus_keyboard(self):
+        if self.viewport.keyboard_focus():
+            self.input_status.setText('Bàn phím đang điều khiển điện thoại. Bấm ô chữ trên điện thoại để nhập.')
+
+    def phone_shortcut(self, key: str):
+        if self.viewport.shortcut(key):
+            self.input_status.setText({'A': 'Đã gửi Chọn tất cả.', 'C': 'Đã gửi Copy. Chọn chữ trên điện thoại trước khi copy.',
+                                      'X': 'Đã gửi Cắt.', 'V': 'Đã gửi Dán. Kiểm tra nội dung trong ô trên điện thoại.'}[key])
+
+    def paste_clipboard(self):
+        clipboard = QApplication.clipboard()
+        if not clipboard.mimeData() or not clipboard.mimeData().hasText() or not clipboard.text():
+            self.input_status.setText('Clipboard PC chưa có văn bản. Copy chữ trên PC trước.')
+            return
+        self.phone_shortcut('V')
+
+    def insert_composed(self):
+        text = self.composer.toPlainText()
+        if not text:
+            self.input_status.setText('Nhập nội dung vào ô soạn trước.')
+            return
+        if not self.viewport.keyboard_focus():
+            self.input_status.setText('Chưa sẵn sàng. Nhúng điện thoại và chọn ô cần nhập trước.')
+            return
+        QApplication.clipboard().setText(text)
+        self.phone_shortcut('V')
 
     def externalize(self):
         self.viewport.release(restore=True)

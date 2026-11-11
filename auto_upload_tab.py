@@ -187,11 +187,11 @@ class AutoUploadTab(QWidget):
             "Nếu giao diện thay đổi, app sẽ dừng để xử lý thủ công."
         )
         cl.addWidget(self.auto_publish)
-        self.choose_latest = QCheckBox("Chọn thumbnail đầu tiên nếu video vừa copy là mới nhất (thử nghiệm)")
+        self.choose_latest = QCheckBox("Tự chọn đúng video trong album riêng của lượt upload")
         self.choose_latest.setChecked(True)
         self.choose_latest.setToolTip(
-            "Dùng khi album không hiện tên tệp. Chỉ thử chọn khi MediaStore xác nhận video mới copy là video mới nhất. "
-            "Nếu không chắc chắn, app yêu cầu người dùng chọn thủ công."
+            "Mỗi lượt copy có một album AU_ riêng. Chỉ chọn khi album có duy nhất đúng ID, tên và đường dẫn video. "
+            "Không chọn thumbnail đầu tiên trong Gần đây."
         )
         cl.addWidget(self.choose_latest)
         first.addWidget(config_box, 2)

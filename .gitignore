@@ -1,0 +1,26 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+*.pyc.*
+.venv/
+venv/
+runtime/
+
+# Downloaded scrcpy binaries
+tools/scrcpy/
+
+# Local settings and device data
+config/*.json
+logs/
+screenshots/
+
+# Credentials and editor files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

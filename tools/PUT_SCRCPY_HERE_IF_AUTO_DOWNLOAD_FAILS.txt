@@ -1,0 +1,1 @@
+If auto download fails, extract official scrcpy Windows x64 here so that tools\scrcpy\scrcpy.exe exists.

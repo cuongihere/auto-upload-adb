@@ -270,6 +270,7 @@ class AutoUploadTab(QWidget):
         ]
         self.worker = UploadWorker(requests, adb)
         self.worker.message.connect(self.append)
+        self.worker.message.connect(self.on_progress)
         self.worker.outcome.connect(self.show_outcome)
         self.worker.manual_step.connect(self.on_manual_step)
         self.worker.finished.connect(self.on_finished)
@@ -283,6 +284,11 @@ class AutoUploadTab(QWidget):
 
     def append(self, msg: str):
         self.log.appendPlainText(msg)
+
+    def on_progress(self, msg: str):
+        # Status tracks each visible phone action. The full trace stays in log.
+        if self.worker and self.worker.isRunning() and not self.next_btn.isEnabled():
+            self.status.setText("Đang thao tác: " + msg)
 
     def show_outcome(self, result: dict):
         self.append(

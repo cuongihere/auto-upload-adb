@@ -78,3 +78,21 @@ python -m unittest discover -s tests -v
 Nhúng native HWND qua Win32 `SetParent` cần Windows 10/11, Qt/PySide6 và scrcpy đang chạy trong process do app quản lý. Một số phiên bản scrcpy/driver GPU/DPI có thể khiến việc nhúng không thành công: ứng dụng ghi lỗi, scrcpy vẫn mở ngoài để có thể điều khiển thủ công. Kiểm thử tự động bao gồm Windows UI smoke test, nhưng **chưa xác thực trực tiếp trên điện thoại Samsung hoặc Windows của người sử dụng**. Nếu khung đen, thử **Tách ra** rồi **Nhúng scrcpy** lại và gửi ảnh chụp cùng log.
 
 Khi đang chạy Auto Upload, hãy giữ khung bên phải để kiểm tra thao tác trên TikTok/Facebook. Nút tự nhấn Đăng vẫn là tính năng thử nghiệm; có màn hình scrcpy không tự động đồng nghĩa với đăng video đã thành công.
+
+
+## Auto Upload kiểu thao tác trên điện thoại (Tap Flow)
+
+Từ bản này, tab **Auto Upload** không dùng Android Share Intent để chuyển tới TikTok/Facebook nữa. App hoạt động giống người dùng thao tác trên màn hình thật (có thể quan sát trên khung scrcpy nhúng):
+
+1. Copy và kiểm tra video PC → `/sdcard/DCIM/Camera/`.
+2. **Bấm Home**, tìm icon TikTok/Facebook ở Home hoặc ngăn ứng dụng rồi **bấm icon**.
+3. Tìm **Add post / Tạo video / Tạo reel**, bấm mở màn tạo nội dung.
+4. Bấm **Upload / Tải lên**, mở album.
+5. Chọn video vừa copy (ưu tiên tên tệp). Nếu album chỉ hiện hình thumbnail và người dùng bật lựa chọn thử nghiệm, chỉ thử chọn thumbnail đầu tiên **khi MediaStore xác nhận chính xác video đó là video mới nhất**.
+6. Bấm **Next / Tiếp** tới màn hình caption.
+7. Nhập caption ASCII được hỗ trợ; caption có dấu tiếng Việt, emoji hoặc ký tự đặc biệt chưa được nhập tự động bằng ADB an toàn.
+8. Mặc định **dừng ở bước Đăng** để người dùng kiểm tra. Tùy chọn **Tự bấm Đăng cuối cùng** phải được bật và xác nhận trước khi chạy. Bấm Đăng không đồng nghĩa đã xuất bản thành công.
+
+Nếu UI TikTok/Facebook thay đổi, quyền Android xuất hiện, không tìm được icon/nút/video hoặc bộ chọn file khác phiên bản đang hỗ trợ, app **dừng an toàn**, không chọn bừa. Ảnh chụp màn hình lỗi ở `logs/upload_screens/*.png`; mô tả các node UI (không lưu nội dung caption) ở `logs/upload_screens/*.txt`. Bật scrcpy nhúng để quan sát và thao tác thủ công khi app dừng. Nhấn **Đã xử lý / Tiếp tục** để tiếp tục hàng đợi.
+
+**Hạn chế:** Luồng TikTok và Facebook vẫn phụ thuộc phiên bản ứng dụng, Android launcher và ROM; chưa kiểm nghiệm trực tiếp trên điện thoại Samsung SM-N960F của người dùng. Album Reel của Facebook, TikTok có nhiều tài khoản, chế độ ảnh/bài Story và xác minh bài đã xuất bản chưa được bảo đảm. Không cài APK phụ; chỉ dùng ADB, UIAutomator và thao tác chạm thật.

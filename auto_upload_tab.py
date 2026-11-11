@@ -127,8 +127,8 @@ class AutoUploadTab(QWidget):
         layout = QVBoxLayout(self)
         help_label = QLabel(
             "Chọn/tick thiết bị ở bảng phía trên, thêm video PC, chọn nền tảng và nhấn Bắt đầu. "
-            "Mặc định chỉ chuyển video và mở màn hình chia sẻ; bạn hoàn tất đăng trên điện thoại. "
-            "Chế độ tự nhấn Đăng là thử nghiệm, không đảm bảo thành công."
+            "App sẽ thao tác trực tiếp trên điện thoại: Home → icon → Tạo video → Album → Next → Caption. "
+            "Mặc định dừng trước nút Đăng. Nếu một bước không nhận diện được, app dừng an toàn và lưu ảnh lỗi."
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -171,17 +171,24 @@ class AutoUploadTab(QWidget):
         self.facebook_caption.setPlaceholderText("Caption và hashtag Facebook")
         self.facebook_caption.setMaximumHeight(80)
         cl.addWidget(self.facebook_caption)
-        self.auto_publish = QCheckBox("Thử tự động nhập caption và nhấn Đăng (thử nghiệm)")
+        self.auto_publish = QCheckBox("Tự bấm Đăng cuối cùng sau khi đã chọn video/caption (thử nghiệm)")
         self.auto_publish.setToolTip(
             "Chỉ bật sau khi đã thử trên tài khoản và thiết bị riêng. "
             "Nếu giao diện thay đổi, app sẽ dừng để xử lý thủ công."
         )
         cl.addWidget(self.auto_publish)
+        self.choose_latest = QCheckBox("Chọn thumbnail đầu tiên nếu video vừa copy là mới nhất (thử nghiệm)")
+        self.choose_latest.setChecked(True)
+        self.choose_latest.setToolTip(
+            "Dùng khi album không hiện tên tệp. Chỉ thử chọn khi MediaStore xác nhận video mới copy là video mới nhất. "
+            "Nếu không chắc chắn, app yêu cầu người dùng chọn thủ công."
+        )
+        cl.addWidget(self.choose_latest)
         first.addWidget(config_box, 2)
         layout.addLayout(first)
 
         row = QHBoxLayout()
-        self.start_btn = QPushButton("Bắt đầu chuyển video / đăng")
+        self.start_btn = QPushButton("Bắt đầu thao tác trên điện thoại")
         self.next_btn = QPushButton("Đã xử lý / Tiếp tục")
         self.cancel_btn = QPushButton("Dừng")
         self.next_btn.setEnabled(False)
@@ -243,8 +250,8 @@ class AutoUploadTab(QWidget):
         if self.auto_publish.isChecked():
             answer = QMessageBox.question(
                 self, "Xác nhận tự đăng (thử nghiệm)",
-                "Chế độ này có thể NHẤN ĐĂNG THẬT trên TikTok/Facebook. "
-                "Chỉ dùng khi đã kiểm tra ứng dụng và tài khoản trên thiết bị. Tiếp tục?",
+                "Ứng dụng sẽ THAO TÁC TRỰC TIẾP và có thể ĐĂNG THẬT trên TikTok/Facebook. "
+                "Hãy theo dõi màn hình điện thoại, xác nhận đúng tài khoản/video. Tiếp tục?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if answer != QMessageBox.Yes:
@@ -256,12 +263,14 @@ class AutoUploadTab(QWidget):
         requests = [
             UploadRequest(
                 serial=s, video=v, platforms=platforms,
-                captions=dict(captions), auto_publish=self.auto_publish.isChecked()
+                captions=dict(captions), auto_publish=self.auto_publish.isChecked(),
+                choose_latest=self.choose_latest.isChecked()
             )
             for s in serials for v in videos
         ]
         self.worker = UploadWorker(requests, adb)
         self.worker.message.connect(self.append)
+        self.worker.message.connect(self.on_progress)
         self.worker.outcome.connect(self.show_outcome)
         self.worker.manual_step.connect(self.on_manual_step)
         self.worker.finished.connect(self.on_finished)
@@ -275,6 +284,11 @@ class AutoUploadTab(QWidget):
 
     def append(self, msg: str):
         self.log.appendPlainText(msg)
+
+    def on_progress(self, msg: str):
+        # Status tracks each visible phone action. The full trace stays in log.
+        if self.worker and self.worker.isRunning() and not self.next_btn.isEnabled():
+            self.status.setText("Đang thao tác: " + msg)
 
     def show_outcome(self, result: dict):
         self.append(

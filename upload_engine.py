@@ -262,7 +262,8 @@ def attempt_publish(
 
 def run_request(
     request: UploadRequest, adb_executable: str,
-    log: Callable[[str], None], cancelled: threading.Event
+    log: Callable[[str], None], cancelled: threading.Event,
+    on_manual_wait: Optional[Callable[[dict], None]] = None
 ) -> list[dict]:
     adb = ADB(adb_executable, request.serial, cancelled)
     adb.verify_online()
@@ -302,4 +303,6 @@ def run_request(
             log(f"{request.serial} | {platform}: LỖI - {exc}")
         write_history(result)
         outcomes.append(result)
+        if on_manual_wait and result["status"] in {"prepared", "manual_required"}:
+            on_manual_wait(result)
     return outcomes

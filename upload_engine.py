@@ -55,21 +55,35 @@ class ADB:
     def run(self, args: list[str], timeout: int = 25, check: bool = True) -> str:
         if self.cancelled.is_set():
             raise UploadError("Đã hủy theo yêu cầu.")
+        command = [self.executable, "-s", self.serial, *args]
         try:
-            p = subprocess.run(
-                [self.executable, "-s", self.serial, *args],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise UploadError(f"ADB lỗi: {exc}") from exc
-        out = (p.stdout or "") + "\n" + (p.stderr or "")
-        if check and p.returncode != 0:
-            raise UploadError(f"ADB exit={p.returncode}: {out.strip()[-500:]}")
+        except OSError as exc:
+            raise UploadError(f"ADB không khởi chạy: {exc}") from exc
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                if self.cancelled.is_set():
+                    process.kill()
+                    process.communicate()
+                    raise UploadError("Đã hủy theo yêu cầu.")
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    process.communicate()
+                    raise UploadError(f"ADB quá thời gian {timeout}s: {' '.join(args[:3])}")
+                time.sleep(0.1)
+            stdout, stderr = process.communicate()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+        out = (stdout or "") + "\n" + (stderr or "")
+        if check and process.returncode != 0:
+            raise UploadError(f"ADB exit={process.returncode}: {out.strip()[-500:]}")
         return out.strip()
 
     def verify_online(self) -> None:

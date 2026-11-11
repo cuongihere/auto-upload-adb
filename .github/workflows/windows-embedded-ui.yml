@@ -1,0 +1,40 @@
+name: Windows Embedded Scrcpy Smoke
+on:
+  push:
+    branches: [main, feature/embed-scrcpy-fullscreen]
+  pull_request:
+
+jobs:
+  windows-ui:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PySide6
+        run: python -m pip install -r requirements.txt
+      - name: Compile source
+        run: python -m compileall -q main.py embedded_scrcpy.py auto_upload_tab.py upload_engine.py
+      - name: Construct UI including native phone dock
+        run: |
+          @'
+          from PySide6.QtWidgets import QApplication
+          import main
+          from embedded_scrcpy import find_scrcpy_window, WINDOWS
+          assert WINDOWS, "Expected Windows runner"
+          assert find_scrcpy_window(0, "") is None
+          main.MainWindow.scan_devices = lambda self: None
+          app = QApplication([])
+          win = main.MainWindow()
+          win.showMaximized()
+          app.processEvents()
+          assert win.isMaximized()
+          assert win.phone_panel.viewport is not None
+          assert win.phone_dock.isVisible()
+          win.close()
+          print("Windows UI construction passed.")
+          '@ | Set-Content -Encoding utf8 smoke_ui.py
+          python smoke_ui.py

@@ -62,3 +62,19 @@ Chạy kiểm tra cú pháp và unit test:
 python -m compileall -q main.py upload_engine.py auto_upload_tab.py
 python -m unittest discover -s tests -v
 ```
+
+
+## Nhúng màn hình scrcpy vào ứng dụng (Windows)
+
+- App mở **phóng to cửa sổ (Maximized)** theo kích thước màn hình Windows.
+- Bên phải là khung **Màn hình điện thoại - scrcpy trực tiếp**. Khung này luôn hiện khi chuyển sang **Auto Upload**, giúp quan sát và click/thao tác lên màn hình điện thoại bằng chuột/bàn phím.
+- Chọn hoặc tick **một** máy ở bảng thiết bị, bấm **Nhúng scrcpy đã chọn** (thanh công cụ hoặc nút trong khung bên phải). Máy đã chạy scrcpy ngoài app cũng có thể được nhúng nếu phiên scrcpy do ứng dụng quản lý.
+- **Tách ra**: trả scrcpy về cửa sổ Windows riêng, giữ nguyên process/ADB. **Dừng scrcpy**: đóng phiên scrcpy đang nhúng. **Home/Back**: gửi phím tới điện thoại đang nhúng.
+- **Mở tất cả (cửa sổ riêng)** vẫn giữ chế độ cũ để quản lý nhiều máy cùng lúc. Chỉ **một** máy hiển thị trong khung nhúng tại một thời điểm.
+- Phóng to/thu nhỏ cửa sổ ứng dụng sẽ co giãn khung điện thoại. Không truyền hình ảnh qua Python; scrcpy tự render và nhận thao tác trong cửa sổ con.
+
+### Lưu ý tương thích
+
+Nhúng native HWND qua Win32 `SetParent` cần Windows 10/11, Qt/PySide6 và scrcpy đang chạy trong process do app quản lý. Một số phiên bản scrcpy/driver GPU/DPI có thể khiến việc nhúng không thành công: ứng dụng ghi lỗi, scrcpy vẫn mở ngoài để có thể điều khiển thủ công. Kiểm thử tự động bao gồm Windows UI smoke test, nhưng **chưa xác thực trực tiếp trên điện thoại Samsung hoặc Windows của người sử dụng**. Nếu khung đen, thử **Tách ra** rồi **Nhúng scrcpy** lại và gửi ảnh chụp cùng log.
+
+Khi đang chạy Auto Upload, hãy giữ khung bên phải để kiểm tra thao tác trên TikTok/Facebook. Nút tự nhấn Đăng vẫn là tính năng thử nghiệm; có màn hình scrcpy không tự động đồng nghĩa với đăng video đã thành công.

@@ -117,7 +117,10 @@ class TouchFlowTest(unittest.TestCase):
     def test_caption_safe_ascii_enters_via_input_text(self):
         f = flow(caption="My video #test")
         f.sleep = lambda _: None
-        f.wait_nodes = Mock(return_value=[item("description", cls="android.widget.EditText")])
+        f.wait_nodes = Mock(side_effect=[
+            [item('Add a description', cls='android.widget.EditText')],
+            [item('My video #test', cls='android.widget.EditText')],
+        ])
         f.adb.input_ascii.return_value = True
         f.enter_caption()
         f.adb.input_ascii.assert_called_once_with("My video #test")

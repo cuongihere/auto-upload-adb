@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -56,7 +57,10 @@ class ADB:
     def run(self, args: list[str], timeout: int = 25, check: bool = True) -> str:
         if self.cancelled.is_set():
             raise UploadError("Đã hủy theo yêu cầu.")
-        command = [self.executable, "-s", self.serial, *args]
+        # adb shell joins argv into a remote shell command. Preserve SQL quotes,
+        # spaces, hashtags and shell metacharacters as literal arguments.
+        remote_args = ['shell', shlex.join(args[1:])] if args and args[0] == 'shell' else args
+        command = [self.executable, "-s", self.serial, *remote_args]
         try:
             process = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -67,7 +71,7 @@ class ADB:
             raise UploadError(f"ADB không khởi chạy: {exc}") from exc
         deadline = time.monotonic() + timeout
         try:
-            while process.poll() is None:
+            while True:
                 if self.cancelled.is_set():
                     process.kill()
                     process.communicate()
@@ -76,8 +80,13 @@ class ADB:
                     process.kill()
                     process.communicate()
                     raise UploadError(f"ADB quá thời gian {timeout}s: {' '.join(args[:3])}")
-                time.sleep(0.1)
-            stdout, stderr = process.communicate()
+                try:
+                    # Drain pipes while waiting. Large UI XML otherwise fills the
+                    # stdout pipe and deadlocks while poll() waits for ADB exit.
+                    stdout, stderr = process.communicate(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         finally:
             if process.poll() is None:
                 process.kill()
@@ -168,6 +177,7 @@ class ADB:
         except ET.ParseError as exc:
             raise UploadError("XML giao diện không hợp lệ.") from exc
         nodes = []
+        parents = {child: parent for parent in root.iter() for child in parent}
         for el in root.iter("node"):
             a = el.attrib
             m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", a.get("bounds", ""))
@@ -184,6 +194,10 @@ class ADB:
                 "package": a.get("package", ""),
                 "enabled": a.get("enabled", "") == "true",
                 "clickable": a.get("clickable", "") == "true",
+                "selected": a.get("selected", "") == "true",
+                "bounds": (x1, y1, x2, y2),
+                "grid_item": parents.get(el) is not None and
+                    parents[el].get('class', '').endswith('GridView'),
                 "x": (x1 + x2) // 2,
                 "y": (y1 + y2) // 2,
             })
@@ -281,58 +295,109 @@ def attempt_publish(
 def run_request(
     request: UploadRequest, adb_executable: str,
     log: Callable[[str], None], cancelled: threading.Event,
-    on_manual_wait: Optional[Callable[[dict], None]] = None
+    on_manual_wait: Optional[Callable[[dict], str]] = None,
+    history=None,
 ) -> list[dict]:
-    """Transfer once, then navigate each social app by tapping its real UI."""
+    """Reserve content before transfer; persist intent before any final Post tap."""
     from tap_flow import TouchFlow, FlowStopped
+    from upload_history import UploadHistory, fingerprint
 
+    history = history or UploadHistory()
+    try:
+        sha = fingerprint(request.video, cancelled)
+    except (OSError, InterruptedError) as exc:
+        raise UploadError(str(exc)) from exc
     adb = ADB(adb_executable, request.serial, cancelled)
-    adb.verify_online()
-    log(f"{request.serial}: sao chép video từ PC vào điện thoại...")
-    remote, media_uri = adb.transfer(request.video, log)
-    outcomes: list[dict] = []
-
+    remote, media_uri = None, None
+    outcomes = []
     for platform in request.platforms:
         if cancelled.is_set():
-            raise UploadError("Đã hủy theo yêu cầu.")
-        package = PACKAGES[platform]
-        result = {
-            "serial": request.serial, "video": str(request.video),
-            "remote": remote, "platform": platform,
-            "status": "manual_required", "detail": "",
-        }
+            break
+        ident, duplicate = history.reserve(sha, platform, request.serial, request.video)
+        result = dict(serial=request.serial, video=str(request.video), platform=platform,
+                      sha256=sha, history_id=ident, status='in_progress', detail='')
+        if duplicate:
+            result.update(status='duplicate_skipped', detail=(
+                f"Đã chặn trùng nội dung: {duplicate['status']} trên {duplicate['serial']}. "
+                "Xem Lịch sử để xác nhận kết quả cũ nếu cần."))
+            log(result['detail'])
+            outcomes.append(result)
+            continue
+        flow = None
+        submitted = False
         try:
-            if not adb.app_installed(package):
-                raise UploadError(f"Chưa cài {platform} ({package}) trên điện thoại.")
-            flow = TouchFlow(
-                adb, platform, remote, media_uri, request.captions.get(platform, ""),
-                request.auto_publish, request.choose_latest, log
-            )
-            result["status"] = flow.execute()
-            if result["status"] == "prepared":
-                result["detail"] = (
-                    "Đã vào màn hình đăng; hãy xác nhận video và nhấn Đăng trên điện thoại."
-                )
-            elif result["status"] == "submitted_unverified":
-                result["detail"] = (
-                    "Đã chạm nút Đăng; chưa xác minh TikTok/Facebook xuất bản thành công."
-                )
-        except FlowStopped as exc:
-            result["status"] = "manual_required"
-            result["detail"] = str(exc)
-            log(f"{request.serial} | {platform}: DỪNG AN TOÀN: {exc}")
-        except UploadError as exc:
-            if cancelled.is_set():
-                raise
-            result["status"] = "error"
-            result["detail"] = str(exc)
-            log(f"{request.serial} | {platform}: LỖI - {exc}")
+            adb.verify_online()
+            if platform not in PACKAGES or not adb.app_installed(PACKAGES[platform]):
+                raise UploadError(f'Chưa cài ứng dụng {platform} trên điện thoại.')
+            if remote is None:
+                remote, media_uri = adb.transfer(request.video, log)
+                # Detect a source file changed while it was being copied.
+                if fingerprint(request.video, cancelled) != sha:
+                    raise UploadError('Video đã thay đổi trong khi copy. Hãy chọn lại file ổn định.')
+            result['remote'] = remote
+            history.update(ident, 'in_progress', remote=remote)
+            flow = TouchFlow(adb, platform, remote, media_uri,
+                             request.captions.get(platform, ''), request.auto_publish,
+                             request.choose_latest, log)
+
+            def manual(stage, detail):
+                result.update(status='manual_required', detail=f'{stage}: {detail}')
+                history.update(ident, result['status'], result['detail'])
+                if not on_manual_wait:
+                    return 'pause'
+                action = on_manual_wait(dict(result))
+                if action == 'retry':
+                    history.update(ident, 'in_progress', 'Tiếp tục bước đang dở.')
+                return action
+
+            flow.manual_handler = manual if on_manual_wait else None
+
+            def before_submit():
+                nonlocal submitted
+                history.update(ident, 'submitting', 'Chuẩn bị bấm Đăng; không tự thử đăng lại.')
+                submitted = True
+
+            flow.before_submit = before_submit
+            result['status'] = flow.execute()
+            if result['status'] == 'prepared':
+                result['detail'] = 'Video sẵn sàng. Bấm Đăng trên điện thoại rồi xác nhận Đã đăng thành công.'
+                history.update(ident, 'prepared', result['detail'])
+                if on_manual_wait:
+                    action = on_manual_wait(dict(result))
+                    while action == 'retry' and not cancelled.is_set():
+                        if flow.verify_publication(seconds=8):
+                            action = 'published'
+                            break
+                        result['detail'] = 'Chưa xác minh đăng. Nếu đã kiểm tra bài, chọn Đã đăng thành công.'
+                        action = on_manual_wait(dict(result))
+                    result['status'] = 'published_manual' if action == 'published' else 'needs_review'
+            elif result['status'] == 'submitted_unverified':
+                history.update(ident, 'submitted_unverified', 'Đã bấm Đăng, đang kiểm tra kết quả.')
+                if flow.verify_publication():
+                    result['status'] = 'published'
+                elif on_manual_wait:
+                    result['detail'] = 'Chưa đọc được xác nhận của TikTok. Kiểm tra bài trên điện thoại; không tự đăng lại.'
+                    action = on_manual_wait(dict(result))
+                    while action == 'retry' and not cancelled.is_set():
+                        if flow.verify_publication(seconds=8):
+                            action = 'published'
+                            break
+                        action = on_manual_wait(dict(result))
+                    if action == 'published':
+                        result['status'] = 'published_manual'
+            if result['status'] in ('published', 'published_manual'):
+                result['detail'] = ('Ứng dụng báo đăng thành công.' if result['status'] == 'published'
+                                    else 'Người dùng xác nhận đã đăng thành công.')
         except Exception as exc:
-            result["status"] = "error"
-            result["detail"] = str(exc)
-            log(f"{request.serial} | {platform}: LỖI KHÔNG DỰ KIẾN - {exc}")
-        write_history(result)
-        outcomes.append(result)
-        if on_manual_wait and result["status"] in {"prepared", "manual_required"}:
-            on_manual_wait(result)
+            result['status'] = ('submitted_unverified' if submitted else
+                                'needs_review' if flow is not None else 'error')
+            result['detail'] = str(exc)
+            log(f'{request.serial} | {platform}: {exc}')
+        finally:
+            # Cancellation/crash around a post must never make the file retryable.
+            history.update(ident, result['status'], result['detail'], remote)
+            write_history(result)
+            outcomes.append(result)
+        if cancelled.is_set():
+            break
     return outcomes

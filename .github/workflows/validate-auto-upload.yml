@@ -13,6 +13,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile all Python modules
-        run: python -m compileall -q main.py upload_engine.py auto_upload_tab.py tests
+        run: python -m compileall -q main.py upload_engine.py upload_history.py tap_flow.py auto_upload_tab.py tests
       - name: Unit tests (no Android device needed)
         run: python -m unittest discover -s tests -v

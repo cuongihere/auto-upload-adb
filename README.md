@@ -29,40 +29,29 @@ Các launcher `run.bat`, `run.vbs`, `setup_and_run.bat` và phần hướng dẫ
 Ứng dụng tự tạo thư mục cấu hình và dữ liệu khi chạy. Xem `README_VI.txt` để biết thêm cách sử dụng.
 
 
-## Auto Upload (bản thử nghiệm)
+## Auto Upload TikTok và lịch sử chống đăng trùng
 
-Ứng dụng giữ nguyên quản lý nhiều điện thoại qua ADB/scrcpy và bổ sung tab **Auto Upload**.
+1. Kết nối điện thoại, mở khóa, đăng nhập TikTok và chọn máy online.
+2. Thêm video, nhập caption và nhấn **Bắt đầu thao tác trên điện thoại**.
+3. App tính SHA-256 và kiểm tra lịch sử trước khi copy. Cùng nội dung video trên cùng nền tảng bị chặn trên mọi điện thoại, kể cả đổi tên hoặc chuyển thư mục. Video được mã hóa lại có nội dung byte khác nên chưa nhận diện là bản trùng.
+4. App copy tới `/sdcard/DCIM/Camera/`, kiểm tra kích thước, cập nhật MediaStore, mở TikTok, bấm **Quay → thư viện → Video → chọn video → Tiếp → caption**. Nếu không thấy icon, app mở đúng package qua Android launcher. Việc chọn thumbnail đầu tiên chỉ diễn ra khi video vừa copy đứng đầu cả thứ tự ID và thời gian sửa trong MediaStore, trong tab Video.
+5. Mặc định dừng ở màn hình Đăng. Bạn kiểm tra và đăng trên điện thoại, sau đó nhấn **Đã đăng thành công**. App lưu kết quả và mới chuyển sang video tiếp theo.
+6. Tùy chọn **Tự bấm Đăng cuối cùng** ghi trạng thái bền vững trước khi chạm Đăng, sau đó chờ thông báo thành công rõ ràng. Nếu không đọc được thông báo, app dừng để bạn kiểm tra; không coi việc trở về trang chủ là bằng chứng đăng thành công.
 
-**Cách dùng:**
-1. Kết nối điện thoại bằng USB, bật USB debugging, cấp quyền ADB và đăng nhập TikTok/Facebook trên điện thoại.
-2. Trong bảng thiết bị của ứng dụng, chọn dòng hoặc tick các máy có trạng thái `device`.
-3. Mở tab **Auto Upload**, kéo thả video MP4/MOV/M4V/3GP từ PC.
-4. Chọn TikTok/Facebook và nhập caption cho từng nền tảng.
-5. Nhấn **Bắt đầu chuyển video / đăng**. App copy video tới `/sdcard/DCIM/Camera`, đối chiếu kích thước tệp, thử tra MediaStore và gửi qua Android Share Intent vào app đã cài.
-6. **Chế độ mặc định:** hoàn tất phần biên tập/đăng trên điện thoại rồi nhấn **Đã xử lý / Tiếp tục** để chuyển sang nền tảng hoặc video tiếp theo.
+**Khi dừng giữa luồng:** xử lý màn hình đang vướng rồi bấm **Tiếp tục bước đang dở** để thử lại chính bước đó. Không nhấn nút xác nhận đã đăng nếu chưa kiểm tra bài thật. Caption tiếng Việt/emoji cần nhập trên điện thoại/scrcpy; app đối chiếu đúng nội dung sau khi bạn nhấn Tiếp tục.
 
-**Chế độ tự nhấn Đăng (thử nghiệm):** có thể bật bằng checkbox và xác nhận riêng. Chế độ này thử đọc XML giao diện Android bằng UIAutomator, tìm nút **Next/Đăng/Post** theo nhãn chính xác và nhập caption ASCII; chỉ thử bấm nút Đăng khi đã xác định được luồng. Do TikTok/Facebook thường cập nhật giao diện, không thể bảo đảm chạy hết mọi màn hình. Caption có dấu tiếng Việt/emoji sẽ chuyển sang thao tác thủ công để không làm hỏng nội dung. Facebook Reels, Facebook Page và đăng đa tài khoản **chưa được xác thực** trong bản này.
+**Lịch sử:** bảng ngay trong tab Auto Upload, lưu trong `data/upload_history.sqlite3`, không bị mất khi đóng app. Trạng thái `published` là thông báo thành công đọc được từ ứng dụng; `published_manual` là người dùng xác nhận. Các trạng thái đang dở, chuẩn bị đăng, đã bấm Đăng chưa xác minh và cần kiểm tra đều chặn đăng lại. Bấm Dừng hay mất kết nối sau nút Đăng không gỡ chặn. Sau khi đối chiếu trên điện thoại, chọn dòng lịch sử và **Xác nhận bài đã đăng** hoặc **Xác nhận chưa đăng / Cho thử lại**. Lượt cũ không bị xóa; bản ghi mới được tạo nếu thử lại.
 
-**Các trạng thái:**
-- `prepared`: đã gửi video tới Android Share, chưa đăng.
-- `manual_required`: cần thao tác trực tiếp trên điện thoại.
-- `submitted_unverified`: đã thử nhấn nút Đăng, **không đồng nghĩa đăng thành công**.
-- `error`: bước thao tác lỗi; kiểm tra nhật ký.
+Lịch sử JSONL cũ được nhập một lần với trạng thái cần kiểm tra khi còn tìm được file gốc; các file cũ đã chuyển/xóa cần được kiểm tra thủ công. Các bài đăng bên ngoài app không tự được nhập. Sao lưu cả thư mục `data/` khi đổi máy; không xóa lịch sử nếu muốn giữ chống trùng. Nhật ký chi tiết vẫn ở `logs/auto_upload_history.jsonl`; ảnh lỗi ở `logs/upload_screens/`. Danh sách video/caption được giữ ở `config/upload_queue.json`. Dữ liệu này được Git bỏ qua.
 
-**Giới hạn cần biết:**
-- MediaStore có thể không cập nhật ngay hoặc Android ROM có thể không xử lý Share Intent; khi đó app mở TikTok/Facebook và yêu cầu chọn video đã copy thủ công.
-- Không root, không lưu mật khẩu. Không can thiệp API riêng tư của TikTok/Facebook.
-- Đã kiểm tra tĩnh và có unit test; **chưa thử trên thiết bị thật**. Hãy thử bằng tài khoản và video riêng trước khi bật tự đăng.
-- Lịch sử tiến trình nằm ở `logs/auto_upload_history.jsonl`, không chứa mật khẩu. Tệp video đã copy sẽ vẫn ở trên điện thoại để người dùng tự quản lý dung lượng.
-- Khi đang dùng chế độ đồng bộ thao tác máy chính → máy con, nên tắt đồng bộ trước khi chạy Auto Upload để tránh tác động nhầm thiết bị.
+Đã kiểm tra trên Samsung SM-N960F tới màn hình Đăng với video người dùng chọn; chưa xác thực một lượt xuất bản thật hoặc Facebook trên máy này. Giao diện TikTok/Android thay đổi có thể cần bổ sung selector. Quyền truy cập, đăng nhập, CAPTCHA và màn hình lạ cần người dùng xử lý. Tắt đồng bộ thao tác máy chính → máy con trước khi chạy Auto Upload.
 
-Chạy kiểm tra cú pháp và unit test:
+Kiểm tra:
 
 ```powershell
-python -m compileall -q main.py upload_engine.py auto_upload_tab.py
+python -m compileall -q main.py upload_engine.py upload_history.py tap_flow.py auto_upload_tab.py tests
 python -m unittest discover -s tests -v
 ```
-
 
 ## Nhúng màn hình scrcpy vào ứng dụng (Windows)
 
@@ -78,21 +67,3 @@ python -m unittest discover -s tests -v
 Nhúng native HWND qua Win32 `SetParent` cần Windows 10/11, Qt/PySide6 và scrcpy đang chạy trong process do app quản lý. Một số phiên bản scrcpy/driver GPU/DPI có thể khiến việc nhúng không thành công: ứng dụng ghi lỗi, scrcpy vẫn mở ngoài để có thể điều khiển thủ công. Kiểm thử tự động bao gồm Windows UI smoke test, nhưng **chưa xác thực trực tiếp trên điện thoại Samsung hoặc Windows của người sử dụng**. Nếu khung đen, thử **Tách ra** rồi **Nhúng scrcpy** lại và gửi ảnh chụp cùng log.
 
 Khi đang chạy Auto Upload, hãy giữ khung bên phải để kiểm tra thao tác trên TikTok/Facebook. Nút tự nhấn Đăng vẫn là tính năng thử nghiệm; có màn hình scrcpy không tự động đồng nghĩa với đăng video đã thành công.
-
-
-## Auto Upload kiểu thao tác trên điện thoại (Tap Flow)
-
-Từ bản này, tab **Auto Upload** không dùng Android Share Intent để chuyển tới TikTok/Facebook nữa. App hoạt động giống người dùng thao tác trên màn hình thật (có thể quan sát trên khung scrcpy nhúng):
-
-1. Copy và kiểm tra video PC → `/sdcard/DCIM/Camera/`.
-2. **Bấm Home**, tìm icon TikTok/Facebook ở Home hoặc ngăn ứng dụng rồi **bấm icon**.
-3. Tìm **Add post / Tạo video / Tạo reel**, bấm mở màn tạo nội dung.
-4. Bấm **Upload / Tải lên**, mở album.
-5. Chọn video vừa copy (ưu tiên tên tệp). Nếu album chỉ hiện hình thumbnail và người dùng bật lựa chọn thử nghiệm, chỉ thử chọn thumbnail đầu tiên **khi MediaStore xác nhận chính xác video đó là video mới nhất**.
-6. Bấm **Next / Tiếp** tới màn hình caption.
-7. Nhập caption ASCII được hỗ trợ; caption có dấu tiếng Việt, emoji hoặc ký tự đặc biệt chưa được nhập tự động bằng ADB an toàn.
-8. Mặc định **dừng ở bước Đăng** để người dùng kiểm tra. Tùy chọn **Tự bấm Đăng cuối cùng** phải được bật và xác nhận trước khi chạy. Bấm Đăng không đồng nghĩa đã xuất bản thành công.
-
-Nếu UI TikTok/Facebook thay đổi, quyền Android xuất hiện, không tìm được icon/nút/video hoặc bộ chọn file khác phiên bản đang hỗ trợ, app **dừng an toàn**, không chọn bừa. Ảnh chụp màn hình lỗi ở `logs/upload_screens/*.png`; mô tả các node UI (không lưu nội dung caption) ở `logs/upload_screens/*.txt`. Bật scrcpy nhúng để quan sát và thao tác thủ công khi app dừng. Nhấn **Đã xử lý / Tiếp tục** để tiếp tục hàng đợi.
-
-**Hạn chế:** Luồng TikTok và Facebook vẫn phụ thuộc phiên bản ứng dụng, Android launcher và ROM; chưa kiểm nghiệm trực tiếp trên điện thoại Samsung SM-N960F của người dùng. Album Reel của Facebook, TikTok có nhiều tài khoản, chế độ ảnh/bài Story và xác minh bài đã xuất bản chưa được bảo đảm. Không cài APK phụ; chỉ dùng ADB, UIAutomator và thao tác chạm thật.

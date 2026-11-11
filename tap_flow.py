@@ -29,7 +29,7 @@ HOME_LABELS = {
     "Facebook": ("Facebook",),
 }
 CREATE = {
-    "TikTok": ("Add post", "Create", "Create video", "New post", "Tạo", "Tạo video", "+"),
+    "TikTok": ("Add post", "Create", "Create video", "New post", "Tạo", "Tạo video", "Quay", "+"),
     "Facebook": ("Create reel", "Create a reel", "Tạo thước phim", "Tạo Reel", "Tạo bài viết"),
 }
 GALLERY = ("Upload", "Upload video", "Tải lên", "Tải video lên", "Album", "Gallery", "Thư viện")
@@ -70,6 +70,9 @@ class TouchFlow:
         self.stage = "init"
         self.selected_media = False
         self.caption_set = False
+        self.before_submit = lambda: None
+        self.manual_handler = None
+        self.submitted = False
 
     def step(self, name: str):
         if self.adb.cancelled.is_set():
@@ -204,7 +207,11 @@ class TouchFlow:
             elif attempt < 4:
                 self.swipe_up()
                 self.sleep(0.5)
-        self.stop(f"Không tìm thấy icon {self.platform} ở Home hoặc app drawer.")
+        self.log(f'Không thấy icon; mở {self.platform} bằng Android launcher.')
+        self.adb.launch(self.package)
+        self.sleep(2)
+        if not self.visible_app(self.wait_nodes()):
+            self.stop(f'Không xác nhận được {self.platform} đã mở.')
 
     def open_create(self):
         self.step("Bấm nút + / Tạo nội dung")
@@ -214,12 +221,6 @@ class TouchFlow:
         create = self.exact(nodes, CREATE[self.platform])
         if create:
             self.adb.tap(create)
-        elif self.platform == "TikTok" and self.hint(
-            nodes, ("Home", "For You", "Friends", "Inbox", "Profile", "Trang chủ", "Hồ sơ")
-        ):
-            # Guarded TikTok fallback: bottom-center + on a verified TikTok feed.
-            self.log("TikTok: nút + không có nhãn; bấm vị trí giữa thanh điều hướng.")
-            self.tap_ratio(0.50, 0.955)
         else:
             self.stop("Không xác định được nút Tạo nội dung trên giao diện.")
         self.sleep(1.4)
@@ -228,6 +229,10 @@ class TouchFlow:
         self.step("Bấm Tải lên / Upload để mở album video")
         nodes = self.wait_nodes()
         upload = self.exact(nodes, GALLERY)
+        if not upload and self.platform == 'TikTok':
+            upload = next((n for n in nodes if n.get('package') == self.package
+                           and n.get('enabled') and n.get('clickable')
+                           and n.get('resource', '').endswith(':id/upload_hot_area')), None)
         if not upload:
             self.stop("Không tìm thấy nút Tải lên / Upload trong giao diện tạo video.")
         self.adb.tap(upload)
@@ -249,8 +254,16 @@ class TouchFlow:
             (line for line in listing.splitlines() if line.strip().startswith("Row:")), ""
         )
         m = re.search(r"(?:^|[\s,])_id=(\d+)", first_row)
-        return bool(m and m.group(1) == expected_id
-                    and Path(self.remote).name in first_row)
+        if not (m and m.group(1) == expected_id and Path(self.remote).name in first_row):
+            return False
+        # Gallery sorting may use modification time rather than insertion ID.
+        by_date = self.adb.run(
+            ['shell', 'content', 'query', '--uri', 'content://media/external/video/media',
+             '--projection', '_id:_display_name', '--sort', 'date_modified DESC, _id DESC'],
+            timeout=20, check=False)
+        row = next((line for line in by_date.splitlines() if line.strip().startswith('Row:')), '')
+        match = re.search(r'(?:^|[\s,])_id=(\d+)', row)
+        return bool(match and match.group(1) == expected_id and Path(self.remote).name in row)
 
     def select_video(self):
         self.step("Chọn đúng video mới copy trong thư viện")
@@ -282,7 +295,7 @@ class TouchFlow:
                 n for n in nodes if n.get("enabled") and n.get("clickable")
                 and n.get("package") in ({self.package} | PICKER_PACKAGES)
                 and int(h * 0.14) < n.get("y", 0) < int(h * 0.86)
-                and ("Image" in n.get("class", "") or any(
+                and (n.get('grid_item') or "Image" in n.get("class", "") or any(
                     key in n.get("resource", "").lower()
                     for key in ("thumbnail", "media_item", "gallery_item", "photo_item", "video_item")
                 ))
@@ -327,6 +340,9 @@ class TouchFlow:
         editor = find_edit(nodes, self.package)
         if not editor:
             self.stop("Không tìm thấy ô nhập caption.")
+        if editor.get('text', '').strip() == self.caption:
+            self.caption_set = True
+            return
         # Never paste ASCII if text contains Unicode: old Android input text
         # can corrupt Vietnamese, apostrophes, hashes or emoji.
         safe_ascii = (
@@ -341,11 +357,21 @@ class TouchFlow:
             )
         self.adb.tap(editor)
         self.sleep(0.4)
+        if editor.get('text', '').strip() == self.caption:
+            self.caption_set = True
+            self.key('KEYCODE_BACK')
+            return
+        if editor.get('text', '').strip() and not self.hint([editor], CAPTION_HINTS):
+            self.stop('Ô caption đang có nội dung khác. Hãy sửa caption rồi nhấn Tiếp tục.')
         if not self.adb.input_ascii(self.caption):
             self.stop("Không thể nhập caption bằng bàn phím Android.")
         self.caption_set = True
         self.key("KEYCODE_BACK")
         self.sleep(0.5)
+        current = find_edit(self.wait_nodes(), self.package)
+        if not current or current.get('text', '').strip() != self.caption:
+            self.caption_set = False
+            self.stop('Caption trên điện thoại không khớp. Sửa nội dung rồi nhấn Tiếp tục.')
 
     def publish(self) -> str:
         self.step("Kiểm tra nút Đăng")
@@ -358,15 +384,51 @@ class TouchFlow:
         if not self.auto_publish:
             self.log(f"{self.platform}: video và caption sẵn sàng, chờ người dùng bấm Đăng.")
             return "prepared"
+        # Write durable intent before tapping: a disconnect/crash must block retry.
+        self.before_submit()
+        self.submitted = True
         self.adb.tap(post)
         self.log(f"{self.platform}: đã chạm nút Đăng. Chưa xác minh video xuất bản.")
         return "submitted_unverified"
 
+    def verify_publication(self, seconds: float = 90) -> bool:
+        """Only an explicit success notice counts; feed navigation is insufficient."""
+        self.step('Chờ ứng dụng xác nhận đăng thành công')
+        deadline = time.monotonic() + seconds
+        success = ('Your video has been posted', 'Your video has been uploaded',
+                   'Video posted', 'Posted successfully', 'Đăng thành công',
+                   'Video đã được đăng', 'Đã đăng video')
+        while time.monotonic() < deadline:
+            nodes = self.wait_nodes(4)
+            if self.exact(nodes, success):
+                return True
+            self.sleep(1)
+        return False
+
     def execute(self) -> str:
-        self.home_to_icon()
-        self.open_create()
-        self.open_gallery()
-        self.select_video()
-        self.navigate_edit()
-        self.enter_caption()
-        return self.publish()
+        for action in (self.home_to_icon, self.open_create, self.open_gallery,
+                       self.select_video, self.navigate_edit, self.enter_caption):
+            while True:
+                try:
+                    action()
+                    break
+                except FlowStopped as exc:
+                    if not self.manual_handler:
+                        raise
+                    decision = self.manual_handler(self.stage, str(exc))
+                    if decision == 'published':
+                        return 'published_manual'
+                    if decision != 'retry':
+                        return 'needs_review'
+                    # Continue at the failed action, never jump to the next video.
+        while True:
+            try:
+                return self.publish()
+            except FlowStopped as exc:
+                if not self.manual_handler:
+                    raise
+                decision = self.manual_handler(self.stage, str(exc))
+                if decision == 'published':
+                    return 'published_manual'
+                if decision != 'retry':
+                    return 'needs_review'

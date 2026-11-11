@@ -13,6 +13,8 @@ tools/scrcpy/
 config/*.json
 logs/
 screenshots/
+data/
+work/
 
 # Credentials and editor files
 .env

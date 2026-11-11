@@ -60,6 +60,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from auto_upload_tab import AutoUploadTab
+
 APP_NAME = "Trình quản lý Android Scrcpy"
 PROJECT_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = PROJECT_DIR / "config"
@@ -938,6 +940,13 @@ class MainWindow(QMainWindow):
         bottom_tabs = QTabWidget()
         bottom_tabs.addTab(self._build_profile_tab(), "Profile / Lệnh máy")
         bottom_tabs.addTab(self._build_layout_tab(), "Bố cục scrcpy")
+        self.auto_upload_tab = AutoUploadTab(
+            adb_locator=adb_path,
+            selected_serials=self.selected_serials,
+            is_online=lambda serial: bool(self.devices.get(serial) and self.devices[serial].is_online),
+            parent=self,
+        )
+        bottom_tabs.addTab(self.auto_upload_tab, "Auto Upload")
         bottom_tabs.addTab(self._build_log_tab(), "Nhật ký")
 
         splitter.addWidget(top_widget)
@@ -1697,6 +1706,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if not self.auto_upload_tab.shutdown():
+            event.ignore()
+            return
         self.config.save()
         self.input_sync.stop()
         # Tắt scrcpy do app mở để tránh treo process. Nếu bật giữ màn hình tắt, app sẽ gửi lệnh sleep trước/sau khi tắt.

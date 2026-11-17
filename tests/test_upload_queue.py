@@ -70,15 +70,32 @@ class UploadQueueTest(unittest.TestCase):
         self.assertEqual(restarted.history_table.rowCount(), 0)
         self.assertIsNotNone(self.reserve())
 
-    def test_confirmed_green_and_uncertain_yellow(self):
+    def test_history_distinguishes_confirmed_review_and_errors(self):
         ident = self.reserve()
         for status, color in [('in_progress', '#fef3c7'), ('needs_review', '#fef3c7'),
-                              ('error', '#fef3c7'), ('published', '#dcfce7'),
+                              ('error', '#fee2e2'), ('published', '#dcfce7'),
                               ('published_manual', '#dcfce7')]:
             self.history.update(ident, status)
             self.tab.refresh_history()
             for col in range(5):
                 self.assertEqual(self.tab.history_table.item(0, col).background().color().name(), color)
+
+    def test_compact_dashboard_counters_and_safe_actions(self):
+        self.assertIn('1/1 online', self.tab.summary_devices.text())
+        self.assertIn('Video chờ: 2', self.tab.summary_videos.text())
+        self.assertIn('TikTok', self.tab.summary_platforms.text())
+        self.assertTrue(self.tab.advanced_options.isHidden())
+        self.assertFalse(self.tab.auto_publish.isChecked())
+        self.assertFalse(self.tab.posted_btn.isEnabled())
+        self.tab.advanced_btn.setChecked(True)
+        self.assertFalse(self.tab.advanced_options.isHidden())
+
+    def test_progress_names_device_and_current_video(self):
+        self.tab.on_request_started(2, 3, 'phone', 'fish.mp4')
+        self.assertEqual(self.tab.progress_bar.maximum(), 3)
+        self.assertEqual(self.tab.progress_bar.value(), 1)
+        self.assertIn('fish.mp4', self.tab.progress_label.text())
+        self.assertIn('phone', self.tab.progress_label.text())
 
     def test_startup_removes_previously_attempted_video_from_old_queue(self):
         self.reserve()

@@ -887,26 +887,33 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(16, 10, 16, 12)
-        layout.setSpacing(10)
-        title = QLabel('Quản lý điện thoại')
+        layout.setContentsMargins(11, 7, 11, 9)
+        layout.setSpacing(7)
+        heading = QHBoxLayout()
+        title = QLabel('ADB Studio  /  Quản lý & đăng video')
         title.setProperty('role', 'title')
-        layout.addWidget(title)
+        heading.addWidget(title)
+        heading.addStretch(1)
+        self.overview_label = QLabel('Đang kiểm tra ADB...')
+        self.overview_label.setProperty('role', 'summary')
+        heading.addWidget(self.overview_label)
+        layout.addLayout(heading)
 
         self.status_label = QLabel("")
+        self.status_label.setProperty('role', 'muted')
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         toolbar = QGridLayout()
-        self.btn_scan = QPushButton("Quét thiết bị")
-        self.btn_open_selected = QPushButton("Mở máy đã chọn")
-        self.btn_close_selected = QPushButton("Đóng máy đã chọn")
-        self.btn_open_all = QPushButton("Mở tất cả")
+        self.btn_scan = QPushButton("Quét lại")
+        self.btn_open_selected = QPushButton("Xem điện thoại")
+        self.btn_close_selected = QPushButton("Dừng máy đã chọn")
+        self.btn_open_all = QPushButton("Mở tất cả (cửa sổ riêng)")
         self.btn_open_all.setToolTip('Mở tất cả thiết bị trong cửa sổ riêng')
         self.btn_close_all = QPushButton("Tắt tất cả")
-        self.btn_save_profile = QPushButton("Lưu profile")
-        self.auto_scan_toggle = QCheckBox("Tự quét")
+        self.btn_save_profile = QPushButton("Lưu cấu hình máy")
+        self.auto_scan_toggle = QCheckBox("Quét tự động")
 
-        more = QPushButton('Thao tác khác')
+        more = QPushButton('Tác vụ khác')
         more_menu = QMenu(more)
         for button in (self.btn_open_all, self.btn_close_all, self.btn_save_profile):
             more_menu.addAction(button.text(), button.click)
@@ -915,6 +922,8 @@ class MainWindow(QMainWindow):
             toolbar.addWidget(button, 0, index)
         toolbar.addWidget(self.auto_scan_toggle, 0, 4)
         self.btn_open_selected.setProperty('role', 'primary')
+        self.btn_open_selected.setToolTip('Nhúng scrcpy của máy đang chọn vào khung bên phải.')
+        self.btn_close_selected.setToolTip('Dừng scrcpy trên các máy đã chọn; không tắt điện thoại.')
         self.btn_close_all.setProperty('role', 'danger')
 
         self.btn_scan.clicked.connect(self.scan_devices)
@@ -931,14 +940,16 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setDefaultSectionSize(36)
-        self.table.setMinimumHeight(85)
+        self.table.verticalHeader().setDefaultSectionSize(31)
+        self.table.setMinimumHeight(112)
         self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setTextElideMode(Qt.ElideMiddle)
         self.table.itemSelectionChanged.connect(self.load_selected_profile_to_form)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(self.COL_CHECK, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.COL_INDEX, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
         header.setSectionResizeMode(self.COL_SERIAL, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.COL_MODEL, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.COL_STATE, QHeaderView.ResizeToContents)
@@ -950,13 +961,25 @@ class MainWindow(QMainWindow):
 
         top_widget = QWidget()
         top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(3, 2, 3, 2)
+        top_layout.setSpacing(5)
         top_layout.addLayout(toolbar)
-        top_layout.addWidget(self.status_label)
+        device_info = QHBoxLayout()
+        device_info.addWidget(self.status_label)
+        device_info.addStretch(1)
+        self.show_all_columns = QCheckBox('Hiện đủ 9 cột')
+        self.show_all_columns.setToolTip(
+            'Mặc định chỉ hiện thông tin vận hành. Bật để xem cả model, số thứ tự và package.'
+        )
+        device_info.addWidget(self.show_all_columns)
+        top_layout.addLayout(device_info)
         top_layout.addWidget(self.table)
+        self.show_all_columns.toggled.connect(self._toggle_device_columns)
+        self._toggle_device_columns(False)
 
         bottom_tabs = QTabWidget()
-        bottom_tabs.addTab(scroll_page(self._build_profile_tab()), "Thiết bị & lệnh")
-        bottom_tabs.addTab(scroll_page(self._build_layout_tab()), "Bố cục màn hình")
+        bottom_tabs.addTab(scroll_page(self._build_profile_tab()), "Cấu hình máy & lệnh")
+        bottom_tabs.addTab(scroll_page(self._build_layout_tab()), "Bố cục & đồng bộ")
         self.auto_upload_tab = AutoUploadTab(
             adb_locator=adb_path,
             selected_serials=self.selected_serials,
@@ -965,6 +988,7 @@ class MainWindow(QMainWindow):
         )
         bottom_tabs.addTab(scroll_page(self.auto_upload_tab), "Đăng video")
         bottom_tabs.setCurrentIndex(2)
+        self.table.itemSelectionChanged.connect(self.auto_upload_tab.update_summary)
         bottom_tabs.addTab(self._build_log_tab(), "Nhật ký")
 
         splitter.addWidget(top_widget)
@@ -973,7 +997,7 @@ class MainWindow(QMainWindow):
         splitter.setHandleWidth(5)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
-        splitter.setSizes([150, 650])
+        splitter.setSizes([195, 650])
         layout.addWidget(splitter)
 
         # Màn hình điện thoại luôn nằm trong ứng dụng, kể cả khi mở tab Auto Upload.
@@ -1180,6 +1204,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_box)
         return w
 
+    def _toggle_device_columns(self, expanded: bool) -> None:
+        """Show the operating columns by default; full details remain one click away."""
+        for column in (self.COL_INDEX, self.COL_MODEL, self.COL_PACKAGE):
+            self.table.setColumnHidden(column, not expanded)
+
     def _apply_settings_to_ui(self) -> None:
         s = self.config.settings
         self.cols_spin.setValue(int(s["layout_columns"]))
@@ -1197,10 +1226,18 @@ class MainWindow(QMainWindow):
     def _update_paths_label(self) -> None:
         adb = adb_path() or "KHÔNG TÌM THẤY"
         scr = scrcpy_path() or "KHÔNG TÌM THẤY"
-        self.status_label.setText(f"{len(self.devices)} thiết bị  •  "
-                                  + ('ADB sẵn sàng' if adb_path() else 'Chưa tìm thấy ADB'))
-        self.status_label.setProperty('role', 'muted')
+        online = sum(device.is_online for device in self.devices.values())
+        unauthorized = sum(device.state == 'unauthorized' for device in self.devices.values())
+        running = sum(self.scrcpy.is_running(serial) for serial in self.devices)
+        self.status_label.setText(
+            f"Thiết bị: {len(self.devices)}   •   Online: {online}   •   "
+            f"Chưa cấp quyền: {unauthorized}   •   Scrcpy chạy: {running}"
+        )
         self.status_label.setToolTip(f"ADB: {adb}\nscrcpy: {scr}")
+        self.overview_label.setText(
+            'ADB sẵn sàng' if adb_path() else 'Thiếu ADB — kiểm tra thư mục tools'
+        )
+        self.overview_label.setToolTip(f"ADB: {adb}\nscrcpy: {scr}")
 
     def _toggle_auto_scan(self):
         if self.auto_scan_toggle.isChecked():
@@ -1296,7 +1333,23 @@ class MainWindow(QMainWindow):
                 else:
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
+                if col == self.COL_NAME:
+                    item.setToolTip(
+                        f"Tên: {profile.name or d.display_model}\n"
+                        f"Model: {d.display_model}\nSerial: {d.serial}\n"
+                        f"Nhóm: {profile.group or '-'}\n"
+                        f"Package: {profile.default_package or '-'}"
+                    )
                 if col == self.COL_STATE:
+                    item.setText({
+                        'device': 'Sẵn sàng', 'unauthorized': 'Chưa cấp quyền',
+                        'offline': 'Mất kết nối'
+                    }.get(d.state, d.state))
+                    item.setToolTip({
+                        'device': 'Máy đã kết nối ADB và sẵn sàng.',
+                        'unauthorized': 'Mở điện thoại và chọn Allow USB debugging.',
+                        'offline': 'Kiểm tra cáp USB hoặc USB debugging.'
+                    }.get(d.state, d.state))
                     if d.state == "device":
                         item.setForeground(QColor("#007a2f"))
                     elif d.state == "unauthorized":
@@ -1313,6 +1366,8 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, item)
 
         self.table.resizeRowsToContents()
+        if hasattr(self, 'auto_upload_tab'):
+            self.auto_upload_tab.update_summary()
 
     def refresh_running_state(self) -> None:
         self.scrcpy.cleanup_dead()
@@ -1325,6 +1380,7 @@ class MainWindow(QMainWindow):
             running = self.scrcpy.is_running(serial)
             state_item.setText("Đang chạy" if running else "Đã tắt")
             state_item.setForeground(QColor("#007a2f") if running else QColor("#666666"))
+        self._update_paths_label()
         if self.master_serial and self.input_sync.enabled and not self.scrcpy.is_running(self.master_serial):
             self.input_sync.stop()
             self._set_sync_toggle_checked(False)

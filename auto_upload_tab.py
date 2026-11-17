@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import json
 from pathlib import Path
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import QThread, Signal, Qt
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QListWidget,
     QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTabWidget,
+    QProgressBar,
 )
 
 from upload_engine import ADB, PACKAGES, UploadRequest, UploadError, run_request
@@ -72,6 +74,7 @@ class VideoList(QListWidget):
 
 class UploadWorker(QThread):
     message = Signal(str)
+    request_started = Signal(int, int, str, str)
     outcome = Signal(dict)
     manual_step = Signal(str)
     reserved = Signal(dict)
@@ -96,6 +99,7 @@ class UploadWorker(QThread):
         for index, req in enumerate(self.requests, 1):
             if self.cancel_event.is_set():
                 break
+            self.request_started.emit(index, len(self.requests), req.serial, req.video.name)
             self.message.emit(
                 f"[{index}/{len(self.requests)}] {req.serial}: {req.video.name}"
             )
@@ -168,6 +172,8 @@ class AutoUploadTab(QWidget):
         parent=None
     ):
         super().__init__(parent)
+        self._tearing_down = False
+        self._signals_disconnected = False
         self.adb_locator = adb_locator
         self.selected_serials = selected_serials
         self.is_online = is_online
@@ -178,38 +184,54 @@ class AutoUploadTab(QWidget):
         self.history.import_legacy(Path(__file__).resolve().parent / 'logs' / 'auto_upload_history.jsonl')
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        help_label = QLabel(
-            "Chọn điện thoại → thêm video → chọn nền tảng → bắt đầu."
-        )
-        help_label.setProperty('role', 'muted')
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
+        layout.setContentsMargins(9, 8, 9, 9)
+        layout.setSpacing(7)
 
-        first = QHBoxLayout()
-        video_box = QGroupBox("1. Video trên máy tính")
+        # Các chỉ số luôn nhìn thấy, thay vì phải đọc log để biết trạng thái.
+        metrics = QHBoxLayout()
+        metrics.setSpacing(7)
+        self.summary_devices = QLabel()
+        self.summary_videos = QLabel()
+        self.summary_platforms = QLabel()
+        self.summary_results = QLabel()
+        for widget in (self.summary_devices, self.summary_videos,
+                       self.summary_platforms, self.summary_results):
+            widget.setProperty('role', 'metric')
+            metrics.addWidget(widget, 1)
+        layout.addLayout(metrics)
+
+        panels = QHBoxLayout()
+        panels.setSpacing(8)
+        video_box = QGroupBox("01  /  Video chờ đăng")
         vl = QVBoxLayout(video_box)
+        vl.setContentsMargins(8, 11, 8, 8)
+        vl.setSpacing(6)
         self.videos = VideoList()
-        self.videos.setMinimumHeight(125)
+        self.videos.setMinimumHeight(115)
+        self.videos.setTextElideMode(Qt.ElideLeft)
+        self.videos.setToolTip("Kéo thả video vào đây. Đường dẫn đầy đủ lưu trong hàng đợi.")
         vl.addWidget(self.videos)
         video_actions = QHBoxLayout()
         btn_add = QPushButton("Thêm video")
         btn_add.setProperty('role', 'primary')
-        btn_remove = QPushButton("Xóa đã chọn")
-        btn_clear = QPushButton("Xóa hết")
-        btn_clear.setProperty('role', 'danger')
+        btn_remove = QPushButton("Bỏ đã chọn")
+        btn_clear = QPushButton("Xóa danh sách")
         video_actions.addWidget(btn_add)
         video_actions.addWidget(btn_remove)
         video_actions.addWidget(btn_clear)
+        video_actions.addStretch()
         vl.addLayout(video_actions)
         btn_add.clicked.connect(self.add_files)
-        btn_remove.clicked.connect(lambda: [self.videos.takeItem(self.videos.row(i)) for i in self.videos.selectedItems()])
+        btn_remove.clicked.connect(
+            lambda: [self.videos.takeItem(self.videos.row(i)) for i in self.videos.selectedItems()]
+        )
         btn_clear.clicked.connect(self.videos.clear)
-        first.addWidget(video_box, 2)
+        panels.addWidget(video_box, 5)
 
-        config_box = QGroupBox("2. Nền tảng & nội dung")
+        config_box = QGroupBox("02  /  Nền tảng & caption")
         cl = QVBoxLayout(config_box)
+        cl.setContentsMargins(8, 11, 8, 8)
+        cl.setSpacing(6)
         platforms = QHBoxLayout()
         self.tiktok = QCheckBox("TikTok")
         self.facebook = QCheckBox("Facebook")
@@ -218,121 +240,191 @@ class AutoUploadTab(QWidget):
         platforms.addWidget(self.facebook)
         platforms.addStretch()
         cl.addLayout(platforms)
+
+        caption_tabs = QTabWidget()
+        self.tiktok_caption = QPlainTextEdit()
+        self.tiktok_caption.setPlaceholderText(
+            "Caption TikTok. Để trống sẽ lấy tên từng file video."
+        )
+        self.tiktok_caption.setMinimumHeight(70)
+        caption_tabs.addTab(self.tiktok_caption, "Caption TikTok")
+        self.facebook_caption = QPlainTextEdit()
+        self.facebook_caption.setPlaceholderText(
+            "Caption Facebook. Để trống sẽ lấy tên từng file video."
+        )
+        self.facebook_caption.setMinimumHeight(70)
+        caption_tabs.addTab(self.facebook_caption, "Caption Facebook")
+        cl.addWidget(caption_tabs)
+
+        self.advanced_btn = QPushButton("Tùy chọn nâng cao  ▾")
+        self.advanced_btn.setCheckable(True)
+        self.advanced_btn.setToolTip(
+            "Mở/tắt tùy chọn khởi chạy ứng dụng, album và đăng tự động."
+        )
+        cl.addWidget(self.advanced_btn)
+        self.advanced_options = QWidget()
+        advanced = QVBoxLayout(self.advanced_options)
+        advanced.setContentsMargins(2, 2, 2, 1)
+        advanced.setSpacing(6)
         self.open_mode = QComboBox()
         self.open_mode.addItems(['Tự mở ứng dụng', 'Tôi mở sẵn ứng dụng'])
         preview = QHBoxLayout()
         preview.addWidget(self.open_mode, 2)
         self.preview_platform = QComboBox()
         self.preview_platform.addItems(['TikTok', 'Facebook'])
-        self.open_test_btn = QPushButton('Mở thử ứng dụng')
-        self.open_test_btn.setToolTip('Chỉ mở ứng dụng trên thiết bị đã chọn, không bắt đầu đăng video.')
-        self.open_test_btn.clicked.connect(self.test_open_app)
-        preview.addWidget(self.preview_platform)
-        preview.addWidget(self.open_test_btn)
-        cl.addLayout(preview)
-        caption_tabs = QTabWidget()
-        caption_tabs.setFixedHeight(110)
-        self.tiktok_caption = QPlainTextEdit()
-        self.tiktok_caption.setPlaceholderText("Để trống: tự lấy tên từng video (bỏ đuôi file). Hoặc nhập caption và hashtag TikTok.")
-        self.tiktok_caption.setFixedHeight(68)
-        caption_tabs.addTab(self.tiktok_caption, 'Caption TikTok')
-        self.facebook_caption = QPlainTextEdit()
-        self.facebook_caption.setPlaceholderText("Để trống: tự lấy tên từng video (bỏ đuôi file). Hoặc nhập caption và hashtag Facebook.")
-        self.facebook_caption.setFixedHeight(68)
-        caption_tabs.addTab(self.facebook_caption, 'Caption Facebook')
-        cl.addWidget(caption_tabs)
-        self.auto_publish = QCheckBox("Tự bấm Đăng (thử nghiệm)")
-        self.auto_publish.setToolTip(
-            "Chỉ bật sau khi đã thử trên tài khoản và thiết bị riêng. "
-            "Nếu giao diện thay đổi, app sẽ dừng để xử lý thủ công."
+        self.open_test_btn = QPushButton('Mở thử app')
+        self.open_test_btn.setToolTip(
+            'Chỉ mở ứng dụng trên máy đang chọn, không bắt đầu đăng video.'
         )
-        options = QHBoxLayout()
-        options.addWidget(self.auto_publish)
-        self.choose_latest = QCheckBox("Chọn video từ album riêng")
+        self.open_test_btn.clicked.connect(self.test_open_app)
+        preview.addWidget(self.preview_platform, 1)
+        preview.addWidget(self.open_test_btn)
+        advanced.addLayout(preview)
+        self.choose_latest = QCheckBox("Dùng album riêng để chọn đúng video")
         self.choose_latest.setChecked(True)
         self.choose_latest.setToolTip(
-            "Mỗi lượt copy có một album AU_ riêng. Chỉ chọn khi album có duy nhất đúng ID, tên và đường dẫn video. "
-            "Không chọn thumbnail đầu tiên trong Gần đây."
+            "Mỗi lượt dùng album AU_ riêng; chỉ chọn khi đúng ID, tên và đường dẫn."
         )
-        options.addWidget(self.choose_latest)
-        cl.addLayout(options)
-        first.addWidget(config_box, 2)
-        layout.addLayout(first)
+        advanced.addWidget(self.choose_latest)
+        self.auto_publish = QCheckBox("Tự bấm Đăng cuối cùng (thử nghiệm)")
+        self.auto_publish.setToolTip(
+            "Có thể đăng bài thật. Mặc định tắt; cần kiểm tra video và tài khoản trước khi bật."
+        )
+        advanced.addWidget(self.auto_publish)
+        cl.addWidget(self.advanced_options)
+        self.advanced_options.setVisible(False)
+        self.advanced_btn.toggled.connect(self.advanced_options.setVisible)
+        self.advanced_btn.toggled.connect(lambda opened: self.advanced_btn.setText(
+            "Thu gọn tùy chọn  ▴" if opened else "Tùy chọn nâng cao  ▾"
+        ))
+        panels.addWidget(config_box, 6)
+        layout.addLayout(panels)
 
-        row = QHBoxLayout()
-        self.start_btn = QPushButton("Bắt đầu đăng video")
+        actions = QHBoxLayout()
+        actions.setSpacing(7)
+        self.start_btn = QPushButton("Bắt đầu xử lý")
         self.start_btn.setProperty('role', 'primary')
-        self.next_btn = QPushButton("Tiếp tục")
-        self.posted_btn = QPushButton("Đã đăng thành công")
+        self.next_btn = QPushButton("Tiếp tục bước đang dở")
+        self.posted_btn = QPushButton("Đã kiểm tra: đăng thành công")
         self.posted_btn.setProperty('role', 'success')
-        self.cancel_btn = QPushButton("Dừng")
+        self.cancel_btn = QPushButton("Dừng lượt chạy")
         self.cancel_btn.setProperty('role', 'danger')
         self.next_btn.setEnabled(False)
-        self.posted_btn.setEnabled(True)
+        self.posted_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
-        row.addWidget(self.start_btn)
-        row.addWidget(self.next_btn)
-        row.addWidget(self.posted_btn)
-        row.addWidget(self.cancel_btn)
-        row.addStretch()
-        layout.addLayout(row)
+        self.posted_btn.setToolTip(
+            "Chỉ xác nhận khi đã kiểm tra video thực sự xuất hiện trong tài khoản."
+        )
+        for button in (self.start_btn, self.next_btn, self.posted_btn, self.cancel_btn):
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addLayout(actions)
 
-        self.status = QLabel("Sẵn sàng.")
+        self.status = QLabel("Sẵn sàng. Chọn máy ở bảng phía trên và thêm video để bắt đầu.")
         self.status.setProperty('role', 'status')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        progress_line = QHBoxLayout()
+        self.progress_label = QLabel('Chưa có lượt chạy.')
+        self.progress_label.setProperty('role', 'muted')
+        self.progress_label.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat('Chưa bắt đầu')
+        progress_line.addWidget(self.progress_label, 3)
+        progress_line.addWidget(self.progress_bar, 2)
+        layout.addLayout(progress_line)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(1000)
-        self.log.setPlaceholderText("Tiến trình đăng và trạng thái từng video sẽ hiển thị ở đây.")
-        result_tabs = QTabWidget()
-        result_tabs.setMinimumHeight(220)
-        result_tabs.setMaximumHeight(280)
+        self.log.setPlaceholderText("Các bước thao tác trên điện thoại và lỗi sẽ hiển thị ở đây.")
 
+        result_tabs = QTabWidget()
+        result_tabs.setMinimumHeight(245)
         history_box = QWidget()
         hl = QVBoxLayout(history_box)
-        legend = QLabel('● Xanh: đã đăng thành công     ● Vàng: cần kiểm tra / xác nhận')
+        hl.setContentsMargins(7, 7, 7, 7)
+        hl.setSpacing(5)
+        legend = QLabel('Xanh: đã đăng   •   Vàng: cần xác nhận   •   Đỏ: lỗi')
         legend.setProperty('role', 'muted')
         hl.addWidget(legend)
         self.history_table = QTableWidget(0, 5)
-        self.history_table.setHorizontalHeaderLabels(['Thời gian', 'Máy', 'Nền tảng', 'Video', 'Kết quả'])
+        self.history_table.setHorizontalHeaderLabels(
+            ['Thời gian (máy tính)', 'Thiết bị', 'Nền tảng', 'Video', 'Trạng thái']
+        )
         self.history_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.history_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.setTextElideMode(Qt.ElideMiddle)
         self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.history_table.setMinimumHeight(130)
+        self.history_table.setMinimumHeight(145)
         self.history_table.verticalHeader().hide()
-        self.history_table.verticalHeader().setDefaultSectionSize(38)
+        self.history_table.verticalHeader().setDefaultSectionSize(32)
         hl.addWidget(self.history_table)
-        hr = QHBoxLayout()
-        refresh = QPushButton('Làm mới')
-        self.mark_posted_btn = QPushButton('Xác nhận bài đã đăng')
+        history_actions = QHBoxLayout()
+        refresh = QPushButton('Làm mới lịch sử')
+        self.mark_posted_btn = QPushButton('Xác nhận đã đăng')
         self.mark_posted_btn.setProperty('role', 'success')
-        self.release_btn = QPushButton('Chưa đăng / Thử lại')
-        hr.addWidget(refresh)
-        hr.addWidget(self.mark_posted_btn)
-        hr.addWidget(self.release_btn)
-        hl.insertLayout(1, hr)
-        result_tabs.addTab(history_box, 'Lịch sử chống trùng')
+        self.release_btn = QPushButton('Chưa đăng / Cho thử lại')
+        history_actions.addWidget(refresh)
+        history_actions.addWidget(self.mark_posted_btn)
+        history_actions.addWidget(self.release_btn)
+        history_actions.addStretch()
+        hl.addLayout(history_actions)
+        result_tabs.addTab(history_box, 'Lịch sử & chống trùng')
         result_tabs.addTab(self.log, 'Nhật ký thao tác')
         layout.addWidget(result_tabs, 1)
+
         refresh.clicked.connect(self.refresh_history)
         self.mark_posted_btn.clicked.connect(lambda: self.resolve_history(True))
         self.release_btn.clicked.connect(lambda: self.resolve_history(False))
         self.posted_btn.clicked.connect(self.confirm_posted)
-        self.refresh_history()
         self.load_queue()
         self.videos.model().rowsInserted.connect(self.save_queue)
         self.videos.model().rowsRemoved.connect(self.save_queue)
         self.videos.model().modelReset.connect(self.save_queue)
+        self.videos.model().rowsInserted.connect(self.update_summary)
+        self.videos.model().rowsRemoved.connect(self.update_summary)
+        self.videos.model().modelReset.connect(self.update_summary)
         self.tiktok_caption.textChanged.connect(self.save_queue)
         self.facebook_caption.textChanged.connect(self.save_queue)
-        self.refresh_history()
-
+        self.tiktok.toggled.connect(self.update_summary)
+        self.facebook.toggled.connect(self.update_summary)
         self.start_btn.clicked.connect(self.start_upload)
         self.next_btn.clicked.connect(self.resume_upload)
         self.cancel_btn.clicked.connect(self.stop_upload)
+        self.refresh_history()
+        self.update_summary()
+
+    def update_summary(self, *args):
+        """Compact live counters; no database access or modification."""
+        if self._tearing_down:
+            return
+        selected = list(dict.fromkeys(self.selected_serials()))
+        ready = sum(bool(self.is_online(serial)) for serial in selected)
+        platforms = [name for name, control in (
+            ('TikTok', self.tiktok), ('Facebook', self.facebook)
+        ) if control.isChecked()]
+        history = getattr(self, 'history_rows', [])
+        confirmed = sum(row['status'] in ('published', 'published_manual') for row in history)
+        needs_review = sum(row['status'] not in ('published', 'published_manual') for row in history)
+        self.summary_devices.setText(f"Máy được chọn: {ready}/{len(selected)} online")
+        self.summary_videos.setText(f"Video chờ: {self.videos.count()}")
+        self.summary_platforms.setText(
+            "Nền tảng: " + (', '.join(platforms) if platforms else 'chưa chọn')
+        )
+        self.summary_results.setText(f"Lịch sử: {confirmed} đã đăng / {needs_review} cần xem")
+
+    def on_request_started(self, index: int, total: int, serial: str, video: str):
+        """Show which phone and file the worker is processing, not just raw log text."""
+        self.progress_bar.setMaximum(max(1, total))
+        self.progress_bar.setValue(index - 1)
+        self.progress_bar.setFormat(f"Lượt {index}/{total}")
+        self.progress_label.setText(f"Đang xử lý {index}/{total}  •  {serial}  •  {video}")
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -342,6 +434,8 @@ class AutoUploadTab(QWidget):
             self.videos.add_video(file)
 
     def save_queue(self, *args):
+        if self._tearing_down:
+            return
         path = QUEUE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {'videos': [self.videos.item(i).text() for i in range(self.videos.count())],
@@ -417,6 +511,7 @@ class AutoUploadTab(QWidget):
         self.worker = UploadWorker(requests, adb)
         self.worker.message.connect(self.append)
         self.worker.message.connect(self.on_progress)
+        self.worker.request_started.connect(self.on_request_started)
         self.worker.outcome.connect(self.show_outcome)
         self.worker.reserved.connect(self.on_reserved)
         self.worker.manual_step.connect(self.on_manual_step)
@@ -428,9 +523,13 @@ class AutoUploadTab(QWidget):
         self.next_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.posted_btn.setEnabled(False)
-        self.status.setText(
-            f"Đang xử lý {len(requests)} video × thiết bị; {len(platforms)} nền tảng."
+        self.progress_bar.setRange(0, max(1, len(requests)))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat(f"0/{len(requests)} lượt")
+        self.progress_label.setText(
+            f"Đã tạo {len(requests)} lượt video × thiết bị; {len(platforms)} nền tảng."
         )
+        self.status.setText("Đang chuẩn bị gửi video và kiểm tra lịch sử chống trùng.")
         self.worker.start()
 
     def append(self, msg: str):
@@ -479,6 +578,7 @@ class AutoUploadTab(QWidget):
 
     def on_manual_step(self, msg: str):
         self.status.setText(msg)
+        self.progress_label.setText("Đang chờ bạn xử lý bước hiện tại trên điện thoại.")
         self.next_btn.setEnabled(True)
         self.posted_btn.setEnabled(True)
         self.mark_posted_btn.setEnabled(True)
@@ -493,7 +593,8 @@ class AutoUploadTab(QWidget):
         self.next_btn.setEnabled(False)
         self.posted_btn.setEnabled(False)
         self.mark_posted_btn.setEnabled(False)
-        self.status.setText("Đang tiếp tục hàng đợi...")
+        self.status.setText("Đang tiếp tục bước hiện tại...")
+        self.progress_label.setText("Tiếp tục sau khi bạn đã thao tác trên điện thoại.")
         if self.worker:
             self.worker.proceed()
 
@@ -526,19 +627,29 @@ class AutoUploadTab(QWidget):
                 self.videos.takeItem(index)
         self.history_table.setRowCount(len(self.history_rows))
         for row, item in enumerate(self.history_rows):
-            values = (item['updated_at'][:19].replace('T', ' ') + ' UTC', item['serial'],
-                      item['platform'], Path(item['video']).name,
+            try:
+                local_timestamp = datetime.fromisoformat(
+                    item['updated_at'].replace('Z', '+00:00')
+                ).astimezone().strftime('%d/%m %H:%M')
+            except ValueError:
+                local_timestamp = item['updated_at'][:16].replace('T', ' ')
+            values = (local_timestamp, item['serial'], item['platform'],
+                      Path(item['video']).name,
                       STATUS_LABELS.get(item['status'], 'Chưa xác nhận'))
             confirmed = item['status'] in ('published', 'published_manual')
+            failed = item['status'] == 'error'
+            background = '#DCFCE7' if confirmed else ('#FEE2E2' if failed else '#FEF3C7')
+            foreground = '#14532D' if confirmed else ('#991B1B' if failed else '#78350F')
             for col, value in enumerate(values):
                 cell = QTableWidgetItem(value)
-                cell.setBackground(QBrush(QColor('#DCFCE7' if confirmed else '#FEF3C7')))
-                cell.setForeground(QBrush(QColor('#14532D' if confirmed else '#78350F')))
+                cell.setBackground(QBrush(QColor(background)))
+                cell.setForeground(QBrush(QColor(foreground)))
                 cell.setToolTip(item['detail'] + '\nSố lần thử: ' + str(item['attempt_count'])
                                 + '\nSHA-256: ' + item['sha256'])
                 self.history_table.setItem(row, col, cell)
             if item['id'] == selected_id:
                 self.history_table.selectRow(row)
+        self.update_summary()
 
     def resolve_history(self, published: bool):
         row = self.history_table.currentRow()
@@ -579,23 +690,60 @@ class AutoUploadTab(QWidget):
         self.next_btn.setEnabled(False)
         self.posted_btn.setEnabled(False)
         self.status.setText("Đang dừng sau thao tác hiện tại...")
+        self.progress_label.setText("Đang dừng — kiểm tra lịch sử trước khi thử lại.")
 
     def on_finished(self):
         self.start_btn.setEnabled(True)
         self.open_test_btn.setEnabled(True)
         self.mark_posted_btn.setEnabled(True)
         self.release_btn.setEnabled(True)
-        self.posted_btn.setEnabled(True)
+        self.posted_btn.setEnabled(False)
         self.refresh_history()
         self.cancel_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         if self.worker and self.worker.cancel_event.is_set():
-            self.status.setText("Đã dừng.")
+            self.status.setText("Đã dừng lượt xử lý. Các trạng thái chưa rõ vẫn cần đối chiếu.")
+            self.progress_label.setText("Đã dừng. Xem Lịch sử & chống trùng để xử lý bài đang dở.")
         else:
+            self.progress_bar.setValue(self.progress_bar.maximum())
+            self.progress_bar.setFormat("Đã kết thúc lượt xử lý")
+            self.progress_label.setText("Đã kết thúc lượt chạy. Kiểm tra kết quả từng bài ở lịch sử.")
             self.status.setText(
-                "Đã xử lý xong hàng đợi. Chú ý: trạng thái submitted_unverified "
-                "KHÔNG có nghĩa video đã xuất bản thành công."
+                "Đã xử lý hết lượt trong hàng đợi. Bài 'đã bấm Đăng — chưa xác nhận' "
+                "không được tính là đăng thành công."
             )
+
+    def _disconnect_ui_signals(self):
+        """Detach Python slots before Qt destroys the underlying C++ widgets."""
+        if self._signals_disconnected:
+            return
+        self._signals_disconnected = True
+        try:
+            model = self.videos.model()
+            bindings = (
+                (model.rowsInserted, self.save_queue),
+                (model.rowsRemoved, self.save_queue),
+                (model.modelReset, self.save_queue),
+                (model.rowsInserted, self.update_summary),
+                (model.rowsRemoved, self.update_summary),
+                (model.modelReset, self.update_summary),
+                (self.tiktok_caption.textChanged, self.save_queue),
+                (self.facebook_caption.textChanged, self.save_queue),
+                (self.tiktok.toggled, self.update_summary),
+                (self.facebook.toggled, self.update_summary),
+            )
+            for signal, slot in bindings:
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+
+    def closeEvent(self, event):
+        self._tearing_down = True
+        self._disconnect_ui_signals()
+        super().closeEvent(event)
 
     def shutdown(self) -> bool:
         if self.open_worker and self.open_worker.isRunning():
@@ -607,4 +755,6 @@ class AutoUploadTab(QWidget):
             if not self.worker.wait(4000):
                 self.append("ADB đang hoàn tất tác vụ. Hãy đóng lại khi tiến trình dừng.")
                 return False
+        self._tearing_down = True
+        self._disconnect_ui_signals()
         return True

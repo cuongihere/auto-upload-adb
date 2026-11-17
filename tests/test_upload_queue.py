@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QCoreApplication, QEvent
 
 from auto_upload_tab import AutoUploadTab
 from upload_history import UploadHistory, fingerprint
@@ -38,7 +39,14 @@ class UploadQueueTest(unittest.TestCase):
 
     def make_tab(self):
         tab = AutoUploadTab(lambda: 'adb', lambda: ['phone'], lambda _: True)
-        self.addCleanup(tab.close)
+
+        def cleanup():
+            tab.close()
+            tab.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            self.app.processEvents()
+
+        self.addCleanup(cleanup)
         return tab
 
     def reserve(self):

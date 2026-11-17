@@ -158,7 +158,8 @@ class EmbeddedScrcpyViewport(QWidget):
         self.setAttribute(Qt.WA_NativeWindow, True)
         self.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setStyleSheet("background: #0c0f14;")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: #ffffff; border: 1px solid #d5deea; border-radius: 8px;")
         self.serial = ""
         self.title = ""
         self.process = None
@@ -173,13 +174,13 @@ class EmbeddedScrcpyViewport(QWidget):
         self._health_timer.timeout.connect(self._check_alive)
 
         self.placeholder = QLabel(
-            "📱\n\nChọn điện thoại ở bảng bên trái\nvà nhấn «Nhúng scrcpy».\n\n"
+            "MÀN HÌNH ĐIỆN THOẠI\n\nChọn điện thoại ở bảng bên trái\nvà nhấn «Kết nối».\n\n"
             "Màn hình sẽ hiển thị tại đây.\nDùng chuột và bàn phím để điều khiển."
         )
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setWordWrap(True)
         self.placeholder.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.placeholder.setStyleSheet("color: #b5bdc7; font-size: 13px; background: transparent;")
+        self.placeholder.setStyleSheet("color: #62738a; font-size: 13px; background: transparent; border: none;")
         label_layout = QVBoxLayout(self)
         label_layout.setContentsMargins(8, 8, 8, 8)
         label_layout.addWidget(self.placeholder)
@@ -267,7 +268,7 @@ class EmbeddedScrcpyViewport(QWidget):
         self.hwnd = None
         self.old_style = None
         self.placeholder.setText(
-            "📱\n\nChọn điện thoại ở bảng bên trái\nvà nhấn «Nhúng scrcpy»."
+            "MÀN HÌNH ĐIỆN THOẠI\n\nChọn điện thoại ở bảng bên trái\nvà nhấn «Kết nối»."
         )
         self.placeholder.show()
         self.detached.emit()
@@ -324,10 +325,11 @@ class PhonePreviewPanel(QWidget):
         self.setMinimumWidth(280)
         self.setMaximumWidth(800)
         root = QVBoxLayout(self)
-        root.setContentsMargins(5, 5, 5, 5)
-        root.setSpacing(6)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
 
         self.label = QLabel("Chưa chọn điện thoại.")
+        self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         root.addWidget(self.label)
 
@@ -335,42 +337,59 @@ class PhonePreviewPanel(QWidget):
         self.viewport.setMinimumSize(220, 270)
         root.addWidget(self.viewport, 1)
 
+        input_toggle = QPushButton('Nhập chữ vào điện thoại +')
+        input_toggle.setCheckable(True)
+        root.addWidget(input_toggle)
+        input_tools = QWidget()
+        input_layout = QVBoxLayout(input_tools)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(7)
+        root.addWidget(input_tools)
+        input_tools.hide()
+        input_toggle.toggled.connect(input_tools.setVisible)
+        input_toggle.toggled.connect(lambda checked: input_toggle.setText(
+            'Thu gọn phần nhập chữ −' if checked else 'Nhập chữ vào điện thoại +'))
+
         self.input_hint = QLabel('Bấm ô chữ trên điện thoại rồi gõ. Ctrl+A/C/X/V: chọn hết / copy / cắt / dán.\n'
                                 'Tiếng Việt, emoji: dán từ PC hoặc soạn ở ô bên dưới.')
         self.input_hint.setWordWrap(True)
-        root.addWidget(self.input_hint)
+        self.input_hint.setProperty('role', 'muted')
+        input_layout.addWidget(self.input_hint)
         keyboard_row = QHBoxLayout()
-        self.btn_keyboard = QPushButton('Bàn phím → điện thoại')
+        self.btn_keyboard = QPushButton('Dùng bàn phím PC')
         self.btn_paste = QPushButton('Dán từ PC')
         self.btn_paste.setToolTip('Dán văn bản clipboard PC vào ô đang chọn trên điện thoại, giữ tiếng Việt/emoji/xuống dòng.')
         keyboard_row.addWidget(self.btn_keyboard)
         keyboard_row.addWidget(self.btn_paste)
-        root.addLayout(keyboard_row)
+        input_layout.addLayout(keyboard_row)
 
         edit_row = QHBoxLayout()
         self.btn_select_all = QPushButton('Chọn tất cả')
-        self.btn_copy = QPushButton('Copy từ điện thoại')
+        self.btn_copy = QPushButton('Sao chép')
         self.btn_cut = QPushButton('Cắt')
         for button in (self.btn_select_all, self.btn_copy, self.btn_cut):
             edit_row.addWidget(button)
-        root.addLayout(edit_row)
+        input_layout.addLayout(edit_row)
 
         self.composer = QPlainTextEdit()
         self.composer.setPlaceholderText('Soạn tiếng Việt, hashtag, emoji… rồi bấm Chèn nội dung.\nNội dung được chèn tại con trỏ trong ô đã chọn trên điện thoại.')
         self.composer.setMaximumHeight(75)
         self.composer.setAccessibleName('Soạn nội dung gửi điện thoại')
-        root.addWidget(self.composer)
+        input_layout.addWidget(self.composer)
         self.btn_insert = QPushButton('Chèn nội dung vào điện thoại')
-        root.addWidget(self.btn_insert)
+        self.btn_insert.setProperty('role', 'primary')
+        input_layout.addWidget(self.btn_insert)
         self.input_status = QLabel('')
         self.input_status.setWordWrap(True)
         self.viewport.input_error.connect(self.input_status.setText)
         root.addWidget(self.input_status)
 
         controls = QHBoxLayout()
-        self.btn_embed = QPushButton("📱 Nhúng scrcpy")
+        self.btn_embed = QPushButton("Kết nối")
+        self.btn_embed.setProperty('role', 'primary')
         self.btn_external = QPushButton("Tách ra")
-        self.btn_stop = QPushButton("Dừng scrcpy")
+        self.btn_stop = QPushButton("Dừng")
+        self.btn_stop.setProperty('role', 'danger')
         controls.addWidget(self.btn_embed, 1)
         controls.addWidget(self.btn_external)
         controls.addWidget(self.btn_stop)
@@ -405,7 +424,7 @@ class PhonePreviewPanel(QWidget):
         self._set_input_enabled(True)
 
     def _on_detached(self):
-        self.label.setText("Chọn điện thoại và nhấn «Nhúng scrcpy».")
+        self.label.setText("Chọn điện thoại và nhấn «Kết nối».")
         self.btn_external.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self._set_input_enabled(False)

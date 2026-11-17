@@ -73,6 +73,7 @@ class TouchFlow:
         self.before_submit = lambda: None
         self.manual_handler = None
         self.submitted = False
+        self.open_app = True
 
     def step(self, name: str):
         if self.adb.cancelled.is_set():
@@ -182,36 +183,24 @@ class TouchFlow:
         raise FlowStopped(f"{reason} Ảnh kiểm tra: {screenshot}")
 
     def home_to_icon(self):
-        self.step("Bấm Home → tìm icon ứng dụng")
-        self.key("KEYCODE_HOME")
-        self.sleep(1)
-        for attempt in range(5):
-            nodes = self.wait_nodes()
-            icon = self.exact(nodes, HOME_LABELS[self.platform], inside_app=False)
-            if icon:
-                self.adb.tap(icon)
-                self.sleep(2.2)
-                after = self.wait_nodes()
-                if self.visible_app(after):
-                    self.log(f"{self.platform}: đã bấm icon {self.platform} từ màn hình Android.")
-                    return
-                # Some apps render no accessible nodes at startup.
-                self.sleep(2.0)
-                if self.visible_app(self.wait_nodes()):
-                    return
-                self.stop("Đã bấm icon nhưng không xác nhận được ứng dụng đã mở.")
-            if attempt == 0:
-                # Samsung One UI: swipe up to open all-apps drawer.
-                self.swipe_up()
+        self.step('Mở trực tiếp ứng dụng' if self.open_app else 'Kiểm tra ứng dụng bạn đã mở')
+        self.key('KEYCODE_WAKEUP')
+        self.sleep(0.5)
+        policy = self.adb.run(['shell', 'dumpsys', 'window', 'policy'], timeout=12)
+        if re.search(r'^\s*(?:showing|mIsShowing)=true\s*$', policy, re.MULTILINE):
+            raise FlowStopped('Điện thoại đang khóa. Hãy mở khóa rồi nhấn Tiếp tục hoặc Mở thử ứng dụng.')
+        if self.adb.is_foreground(self.package) is True:
+            return
+        if self.open_app:
+            try:
+                self.adb.launch(self.package)
+            except UploadError:
+                self.stop(f'Không mở được {self.platform}. Hãy mở thủ công rồi nhấn Tiếp tục.')
+            for _ in range(3):
                 self.sleep(1)
-            elif attempt < 4:
-                self.swipe_up()
-                self.sleep(0.5)
-        self.log(f'Không thấy icon; mở {self.platform} bằng Android launcher.')
-        self.adb.launch(self.package)
-        self.sleep(2)
-        if not self.visible_app(self.wait_nodes()):
-            self.stop(f'Không xác nhận được {self.platform} đã mở.')
+                if self.adb.is_foreground(self.package) is True:
+                    return
+        self.stop(f'Hãy mở {self.platform} trên điện thoại rồi nhấn Tiếp tục.')
 
     def open_create(self):
         self.step("Bấm nút + / Tạo nội dung")

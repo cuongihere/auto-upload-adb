@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
@@ -63,6 +64,7 @@ from PySide6.QtWidgets import (
 
 from auto_upload_tab import AutoUploadTab
 from embedded_scrcpy import PhonePreviewPanel
+from ui_theme import apply_theme, scroll_page
 
 APP_NAME = "Trình quản lý Android Scrcpy"
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -885,30 +887,35 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(16, 10, 16, 12)
+        layout.setSpacing(10)
+        title = QLabel('Quản lý điện thoại')
+        title.setProperty('role', 'title')
+        layout.addWidget(title)
 
         self.status_label = QLabel("")
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        toolbar = QHBoxLayout()
+        toolbar = QGridLayout()
         self.btn_scan = QPushButton("Quét thiết bị")
-        self.btn_open_selected = QPushButton("Nhúng scrcpy đã chọn")
-        self.btn_close_selected = QPushButton("Tắt scrcpy đã chọn")
-        self.btn_open_all = QPushButton("Mở tất cả (cửa sổ riêng)")
+        self.btn_open_selected = QPushButton("Mở máy đã chọn")
+        self.btn_close_selected = QPushButton("Đóng máy đã chọn")
+        self.btn_open_all = QPushButton("Mở tất cả")
+        self.btn_open_all.setToolTip('Mở tất cả thiết bị trong cửa sổ riêng')
         self.btn_close_all = QPushButton("Tắt tất cả")
         self.btn_save_profile = QPushButton("Lưu profile")
         self.auto_scan_toggle = QCheckBox("Tự quét")
 
-        for b in [
-            self.btn_scan,
-            self.btn_open_selected,
-            self.btn_close_selected,
-            self.btn_open_all,
-            self.btn_close_all,
-            self.btn_save_profile,
-        ]:
-            toolbar.addWidget(b)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self.auto_scan_toggle)
+        more = QPushButton('Thao tác khác')
+        more_menu = QMenu(more)
+        for button in (self.btn_open_all, self.btn_close_all, self.btn_save_profile):
+            more_menu.addAction(button.text(), button.click)
+        more.setMenu(more_menu)
+        for index, button in enumerate((self.btn_scan, self.btn_open_selected, self.btn_close_selected, more)):
+            toolbar.addWidget(button, 0, index)
+        toolbar.addWidget(self.auto_scan_toggle, 0, 4)
+        self.btn_open_selected.setProperty('role', 'primary')
+        self.btn_close_all.setProperty('role', 'danger')
 
         self.btn_scan.clicked.connect(self.scan_devices)
         self.btn_open_selected.clicked.connect(self.open_selected)
@@ -924,6 +931,8 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setMinimumHeight(85)
         self.table.verticalHeader().setVisible(False)
         self.table.itemSelectionChanged.connect(self.load_selected_profile_to_form)
         header = self.table.horizontalHeader()
@@ -946,22 +955,25 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.table)
 
         bottom_tabs = QTabWidget()
-        bottom_tabs.addTab(self._build_profile_tab(), "Profile / Lệnh máy")
-        bottom_tabs.addTab(self._build_layout_tab(), "Bố cục scrcpy")
+        bottom_tabs.addTab(scroll_page(self._build_profile_tab()), "Thiết bị & lệnh")
+        bottom_tabs.addTab(scroll_page(self._build_layout_tab()), "Bố cục màn hình")
         self.auto_upload_tab = AutoUploadTab(
             adb_locator=adb_path,
             selected_serials=self.selected_serials,
             is_online=lambda serial: bool(self.devices.get(serial) and self.devices[serial].is_online),
             parent=self,
         )
-        bottom_tabs.addTab(self.auto_upload_tab, "Auto Upload")
+        bottom_tabs.addTab(scroll_page(self.auto_upload_tab), "Đăng video")
+        bottom_tabs.setCurrentIndex(2)
         bottom_tabs.addTab(self._build_log_tab(), "Nhật ký")
 
         splitter.addWidget(top_widget)
         splitter.addWidget(bottom_tabs)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(5)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
-        splitter.setSizes([230, 650])
+        splitter.setSizes([150, 650])
         layout.addWidget(splitter)
 
         # Màn hình điện thoại luôn nằm trong ứng dụng, kể cả khi mở tab Auto Upload.
@@ -1185,7 +1197,10 @@ class MainWindow(QMainWindow):
     def _update_paths_label(self) -> None:
         adb = adb_path() or "KHÔNG TÌM THẤY"
         scr = scrcpy_path() or "KHÔNG TÌM THẤY"
-        self.status_label.setText(f"ADB: {adb}   |   scrcpy: {scr}")
+        self.status_label.setText(f"{len(self.devices)} thiết bị  •  "
+                                  + ('ADB sẵn sàng' if adb_path() else 'Chưa tìm thấy ADB'))
+        self.status_label.setProperty('role', 'muted')
+        self.status_label.setToolTip(f"ADB: {adb}\nscrcpy: {scr}")
 
     def _toggle_auto_scan(self):
         if self.auto_scan_toggle.isChecked():
@@ -1823,6 +1838,7 @@ def main() -> int:
     ensure_dirs()
     apply_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    apply_theme(app)
     app.setApplicationName(APP_NAME)
     apply_window_icon(app)
     w = MainWindow()
@@ -1831,7 +1847,7 @@ def main() -> int:
     else:
         w.append_log("Chưa tìm thấy file icon. Đặt file .ico vào assets/app_icon.ico hoặc assets/app.ico")
     w.showMaximized()
-    QTimer.singleShot(0, lambda: w.resizeDocks([w.phone_dock], [425], Qt.Horizontal))
+    QTimer.singleShot(0, lambda: w.resizeDocks([w.phone_dock], [370], Qt.Horizontal))
     return app.exec()
 
 

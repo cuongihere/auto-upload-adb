@@ -69,9 +69,38 @@ class UploadHistory:
             db.execute('UPDATE uploads SET status=?, detail=?, remote=COALESCE(?,remote), updated_at=? WHERE id=?',
                        (status, detail, remote, datetime.now(timezone.utc).isoformat(), ident))
 
+    def release(self, sha256: str, platform: str):
+        """Resolve every attempt in the displayed group before returning to queue."""
+        with self.connect() as db:
+            db.execute('UPDATE uploads SET status=?, detail=?, updated_at=? WHERE sha256=? AND platform=?',
+                       ('not_published', 'Người dùng xác nhận chưa đăng, chuyển về danh sách chờ.',
+                        datetime.now(timezone.utc).isoformat(), sha256, platform))
+
     def rows(self, limit: int = 500) -> list[dict]:
         with self.connect() as db:
             return [dict(r) for r in db.execute('SELECT * FROM uploads ORDER BY updated_at DESC LIMIT ?', (limit,))]
+
+    def video_rows(self, limit: int = 500) -> list[dict]:
+        """One row per content/platform, preserving all attempts in storage.
+
+        Prefer a blocking attempt so the displayed result matches reserve().
+        Apply the limit after grouping to avoid hiding distinct videos.
+        """
+        placeholders = ','.join('?' for _ in BLOCKING)
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(f'''
+                SELECT * FROM (
+                    SELECT uploads.*,
+                        COUNT(*) OVER (PARTITION BY sha256, platform) AS attempt_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY sha256, platform
+                            ORDER BY CASE WHEN status IN ({placeholders}) THEN 0 ELSE 1 END,
+                                     updated_at DESC, created_at DESC, id DESC
+                        ) AS attempt_rank
+                    FROM uploads
+                ) WHERE attempt_rank = 1
+                ORDER BY updated_at DESC, id DESC LIMIT ?
+            ''', (*BLOCKING, limit))]
 
     def import_legacy(self, source: Path):
         """Old manual handoffs may have been posted; require explicit review."""

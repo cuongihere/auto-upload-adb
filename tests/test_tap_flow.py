@@ -36,16 +36,52 @@ def flow(*, publish=False, choose_latest=True, media_uri="content://media/extern
 
 
 class TouchFlowTest(unittest.TestCase):
-    def test_home_uses_android_home_and_taps_launcher_icon(self):
+    def test_open_launches_directly_without_tapping_launcher(self):
         f = flow()
+        f.adb.is_foreground.side_effect = [False, True]
         f.sleep = lambda _: None
         f.wait_nodes = Mock(side_effect=[
             [item("TikTok", package=LAUNCHER)],
             [item("Home"), item("Profile")]
         ])
         f.home_to_icon()
-        f.adb.run.assert_any_call(["shell", "input", "keyevent", "KEYCODE_HOME"], timeout=12)
-        f.adb.tap.assert_called_once_with(item("TikTok", package=LAUNCHER))
+        f.adb.launch.assert_called_once_with(PKG)
+        f.adb.tap.assert_not_called()
+        f.adb.run.assert_any_call(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'], timeout=12)
+
+    def test_open_preserves_already_open_application(self):
+        f = flow()
+        f.adb.is_foreground.return_value = True
+        f.wait_nodes = Mock(return_value=[item('Home')])
+        f.home_to_icon()
+        f.adb.launch.assert_not_called()
+
+    def test_manual_open_mode_does_not_launch_or_tap(self):
+        f = flow()
+        f.open_app = False
+        f.wait_nodes = Mock(return_value=[item('Home', package=LAUNCHER)])
+        f.snapshot = Mock(return_value='failure.png')
+        with self.assertRaises(FlowStopped):
+            f.home_to_icon()
+        f.adb.launch.assert_not_called()
+        f.adb.tap.assert_not_called()
+
+    def test_locked_phone_stops_before_launch(self):
+        f = flow()
+        f.sleep = Mock()
+        f.adb.run.return_value = '  showing=true\n  mIsShowing=true'
+        with self.assertRaisesRegex(FlowStopped, 'đang khóa'):
+            f.home_to_icon()
+        f.adb.launch.assert_not_called()
+
+    def test_unlocked_phone_ignores_stale_occlusion_flag(self):
+        f = flow()
+        f.adb.is_foreground.return_value = True
+        f.sleep = Mock()
+        f.adb.run.return_value = 'showing=false\nshowingAndNotOccluded=true\nmIsShowing=false'
+        f.wait_nodes = Mock(return_value=[item('Home')])
+        f.home_to_icon()
+        f.adb.launch.assert_not_called()
 
     def test_create_taps_accessible_add_post(self):
         f = flow()

@@ -39,6 +39,7 @@ class UploadRequest:
     captions: dict[str, str]
     auto_publish: bool = False
     choose_latest: bool = True
+    open_app: bool = True
 
 
 def write_history(data: dict) -> None:
@@ -109,6 +110,11 @@ class ADB:
         out = self.run(["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
         if "monkey aborted" in out.lower() or "no activities found" in out.lower():
             raise UploadError(f"Không thể mở ứng dụng {package}.")
+
+    def is_foreground(self, package: str) -> bool:
+        output = self.run(['shell', 'dumpsys', 'window'], timeout=12)
+        return any('mCurrentFocus=' in line and re.search(
+            r'\s' + re.escape(package) + r'/', line) for line in output.splitlines())
 
     def transfer(self, video: Path, log: Callable[[str], None]) -> tuple[str, Optional[str]]:
         if not video.is_file():
@@ -302,6 +308,7 @@ def run_request(
     log: Callable[[str], None], cancelled: threading.Event,
     on_manual_wait: Optional[Callable[[dict], str]] = None,
     history=None,
+    on_reserved: Optional[Callable[[dict], None]] = None,
 ) -> list[dict]:
     """Reserve content before transfer; persist intent before any final Post tap."""
     from tap_flow import TouchFlow, FlowStopped
@@ -321,6 +328,8 @@ def run_request(
         ident, duplicate = history.reserve(sha, platform, request.serial, request.video)
         result = dict(serial=request.serial, video=str(request.video), platform=platform,
                       sha256=sha, history_id=ident, status='in_progress', detail='')
+        if on_reserved:
+            on_reserved(dict(result))
         if duplicate:
             result.update(status='duplicate_skipped', detail=(
                 f"Đã chặn trùng nội dung: {duplicate['status']} trên {duplicate['serial']}. "
@@ -341,9 +350,13 @@ def run_request(
                     raise UploadError('Video đã thay đổi trong khi copy. Hãy chọn lại file ổn định.')
             result['remote'] = remote
             history.update(ident, 'in_progress', remote=remote)
+            caption = request.captions.get(platform, '')
+            if not caption.strip():
+                caption = request.video.stem
             flow = TouchFlow(adb, platform, remote, media_uri,
-                             request.captions.get(platform, ''), request.auto_publish,
+                             caption, request.auto_publish,
                              request.choose_latest, log)
+            flow.open_app = request.open_app
 
             def manual(stage, detail):
                 result.update(status='manual_required', detail=f'{stage}: {detail}')

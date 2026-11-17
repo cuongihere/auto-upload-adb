@@ -52,6 +52,33 @@ class HistoryTest(unittest.TestCase):
             results = list(pool.map(self.reserve, ['a', 'b', 'c', 'd']))
         self.assertEqual(sum(ident is not None for ident, _ in results), 1)
 
+    def test_video_rows_group_retries_and_keep_attempts(self):
+        first, _ = self.reserve()
+        self.history.update(first, 'not_published')
+        latest, _ = self.reserve()
+        self.history.update(latest, 'not_published')
+        rows = self.history.video_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['id'], latest)
+        self.assertEqual(rows[0]['attempt_count'], 2)
+        self.assertEqual(len(self.history.rows()), 2)
+
+    def test_video_rows_show_blocking_attempt_even_if_old_attempt_updated(self):
+        first, _ = self.reserve()
+        self.history.update(first, 'not_published')
+        current, _ = self.reserve()
+        self.history.update(first, 'not_published')
+        self.assertEqual(self.history.video_rows()[0]['id'], current)
+        self.assertEqual(self.reserve()[1]['id'], current)
+
+    def test_video_rows_keep_platforms_and_distinct_content_separate(self):
+        self.reserve()
+        self.history.reserve(fingerprint(self.video), 'Facebook', 'phone', self.video)
+        self.video.write_bytes(b'different-content')
+        self.reserve()
+        self.assertEqual(len(self.history.video_rows()), 3)
+        self.assertEqual(len(self.history.video_rows(limit=2)), 2)
+
     def test_same_video_can_use_different_platform(self):
         self.reserve()
         ident, _ = self.history.reserve(fingerprint(self.video), 'Facebook', 'phone', self.video)
@@ -103,6 +130,21 @@ class HistoryTest(unittest.TestCase):
         self.history.import_legacy(legacy)
         self.assertEqual(len(self.history.rows()), 1)
         self.assertEqual(self.history.rows()[0]['status'], 'needs_review')
+
+    @patch('upload_engine.write_history')
+    @patch('tap_flow.TouchFlow')
+    @patch('upload_engine.ADB')
+    def test_caption_defaults_per_video_and_platform(self, adb_class, flow_class, journal):
+        adb_class.return_value.transfer.return_value = ('/sdcard/video.mp4', None)
+        flow_class.return_value.execute.return_value = 'prepared'
+        for index, captions in enumerate(({}, {'TikTok': '  \n', 'Facebook': 'Caption riêng #tag'})):
+            video = self.folder / f'Video tiếng Việt {index}.mp4'
+            video.write_bytes(f'content-{index}'.encode())
+            req = UploadRequest('phone', video, ('TikTok', 'Facebook'), captions)
+            run_request(req, 'adb', lambda _: None, threading.Event(), history=self.history)
+            calls = flow_class.call_args_list[-2:]
+            self.assertEqual(calls[0].args[4], video.stem)
+            self.assertEqual(calls[1].args[4], captions.get('Facebook', video.stem))
 
 
 class FlowRecoveryTest(unittest.TestCase):

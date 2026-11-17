@@ -172,6 +172,8 @@ class AutoUploadTab(QWidget):
         parent=None
     ):
         super().__init__(parent)
+        self._tearing_down = False
+        self._signals_disconnected = False
         self.adb_locator = adb_locator
         self.selected_serials = selected_serials
         self.is_online = is_online
@@ -400,6 +402,8 @@ class AutoUploadTab(QWidget):
 
     def update_summary(self, *args):
         """Compact live counters; no database access or modification."""
+        if self._tearing_down:
+            return
         selected = list(dict.fromkeys(self.selected_serials()))
         ready = sum(bool(self.is_online(serial)) for serial in selected)
         platforms = [name for name, control in (
@@ -430,6 +434,8 @@ class AutoUploadTab(QWidget):
             self.videos.add_video(file)
 
     def save_queue(self, *args):
+        if self._tearing_down:
+            return
         path = QUEUE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {'videos': [self.videos.item(i).text() for i in range(self.videos.count())],
@@ -707,6 +713,38 @@ class AutoUploadTab(QWidget):
                 "không được tính là đăng thành công."
             )
 
+    def _disconnect_ui_signals(self):
+        """Detach Python slots before Qt destroys the underlying C++ widgets."""
+        if self._signals_disconnected:
+            return
+        self._signals_disconnected = True
+        try:
+            model = self.videos.model()
+            bindings = (
+                (model.rowsInserted, self.save_queue),
+                (model.rowsRemoved, self.save_queue),
+                (model.modelReset, self.save_queue),
+                (model.rowsInserted, self.update_summary),
+                (model.rowsRemoved, self.update_summary),
+                (model.modelReset, self.update_summary),
+                (self.tiktok_caption.textChanged, self.save_queue),
+                (self.facebook_caption.textChanged, self.save_queue),
+                (self.tiktok.toggled, self.update_summary),
+                (self.facebook.toggled, self.update_summary),
+            )
+            for signal, slot in bindings:
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        except RuntimeError:
+            pass
+
+    def closeEvent(self, event):
+        self._tearing_down = True
+        self._disconnect_ui_signals()
+        super().closeEvent(event)
+
     def shutdown(self) -> bool:
         if self.open_worker and self.open_worker.isRunning():
             self.open_worker.cancel_event.set()
@@ -717,4 +755,6 @@ class AutoUploadTab(QWidget):
             if not self.worker.wait(4000):
                 self.append("ADB đang hoàn tất tác vụ. Hãy đóng lại khi tiến trình dừng.")
                 return False
+        self._tearing_down = True
+        self._disconnect_ui_signals()
         return True
